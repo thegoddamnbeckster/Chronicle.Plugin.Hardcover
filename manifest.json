@@ -1,0 +1,10 @@
+{
+  "plugin_id": "hardcover",
+  "name": "Hardcover",
+  "version": "1.0.0",
+  "author": "Michael Beck",
+  "description": "Import reading history, ratings and want-to-read list from Hardcover.app via GraphQL API.",
+  "entry_type": "Chronicle.Plugin.Hardcover.HardcoverImportProvider",
+  "min_chronicle_version": "0.1.0",
+  "repository": "https://github.com/thegoddamnbeckster/Chronicle.Plugin.Hardcover"
+}

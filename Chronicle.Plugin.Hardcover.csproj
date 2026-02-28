@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Chronicle.Plugin.Hardcover</AssemblyName>
+    <RootNamespace>Chronicle.Plugin.Hardcover</RootNamespace>
+    <Version>1.0.0</Version>
+    <Description>Chronicle import plugin for Hardcover.app — GraphQL API</Description>
+  </PropertyGroup>
+
+  <!-- Reference Chronicle.Plugins from the main repo (not bundled at runtime) -->
+  <ItemGroup>
+    <Reference Include="Chronicle.Plugins">
+      <HintPath>..\Chronicle\src\Chronicle.Plugins\bin\Debug\net9.0\Chronicle.Plugins.dll</HintPath>
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="9.0.*" />
+  </ItemGroup>
+
+</Project>
