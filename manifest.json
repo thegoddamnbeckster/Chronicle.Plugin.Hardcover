@@ -6,5 +6,6 @@
   "description": "Import reading history, ratings and want-to-read list from Hardcover.app via GraphQL API.",
   "entry_type": "Chronicle.Plugin.Hardcover.HardcoverImportProvider",
   "min_chronicle_version": "0.1.0",
-  "repository": "https://github.com/thegoddamnbeckster/Chronicle.Plugin.Hardcover"
+  "repository": "https://github.com/thegoddamnbeckster/Chronicle.Plugin.Hardcover",
+  "iconUrl": "https://hardcover.app/favicon.ico"
 }
