@@ -86,6 +86,28 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     {
         foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
         {
+            // ── Strategy 1: direct Hasura table query (more reliable than search index) ──
+            // Try exact case-insensitive match first, then contains match.
+            var directData = await _client!.GetAuthorsByNameAsync(title, ct: ct);
+            var directHits = directData?.Authors ?? [];
+            if (directHits.Length == 0)
+            {
+                directData = await _client!.GetAuthorsByNameAsync($"%{title}%", ct: ct);
+                directHits = directData?.Authors ?? [];
+            }
+
+            if (directHits.Length > 0)
+            {
+                var directCandidates = directHits
+                    .Select(a => ScoreAuthorCandidateDirect(ctx, a))
+                    .Where(c => c.Score > 0)
+                    .OrderByDescending(c => c.Score)
+                    .Take(10)
+                    .ToList();
+                if (directCandidates.Count > 0) return directCandidates;
+            }
+
+            // ── Strategy 2: fallback to Hardcover search index ─────────────────────────
             var data = await _client!.SearchAuthorsAsync(title, ct: ct);
             var hits = ParseSearchResults(data?.Search?.Results ?? default);
             if (hits.Count == 0) continue;
@@ -338,6 +360,23 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         };
         if (meta.ExternalId is null) return new ScoredCandidate(meta, 0, "no id");
         var (score, reason) = ScoreTitle(ctx, name);
+        return new ScoredCandidate(meta, score, reason);
+    }
+
+    /// <summary>Scores an author record returned by the direct Hasura table query.</summary>
+    private static ScoredCandidate ScoreAuthorCandidateDirect(
+        MediaSearchContext ctx, HcAuthor author)
+    {
+        if (author.Id <= 0) return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
+        var meta = new MediaMetadata
+        {
+            ExternalId = $"hardcover:author:{author.Id}",
+            Source     = "hardcover",
+            Title      = author.Name,
+            Overview   = author.Bio,
+            PosterUrl  = author.Image?.Url,
+        };
+        var (score, reason) = ScoreTitle(ctx, author.Name);
         return new ScoredCandidate(meta, score, reason);
     }
 

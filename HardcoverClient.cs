@@ -108,6 +108,21 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { q = query, n = perPage }, ct);
 
+    /// <summary>
+    /// Queries the authors table directly via Hasura using case-insensitive name matching.
+    /// More reliable than the search index for author lookups.
+    /// Pass a plain name for exact match, or wrap in % for contains: "%B. V. Larson%".
+    /// </summary>
+    public Task<AuthorData?> GetAuthorsByNameAsync(string name, int limit = 5, CancellationToken ct = default) =>
+        QueryAsync<AuthorData>("""
+            query GetAuthorsByName($name: String!, $n: Int!) {
+              authors(where: { name: { _ilike: $name } }, limit: $n) {
+                id name bio slug
+                image { url }
+              }
+            }
+            """, new { name, n = limit }, ct);
+
     public Task<SearchData?> SearchSeriesAsync(string query, int perPage = 10, CancellationToken ct = default) =>
         QueryAsync<SearchData>("""
             query SearchSeries($q: String!, $n: Int!) {
