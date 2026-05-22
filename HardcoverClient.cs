@@ -228,6 +228,16 @@ internal sealed class HardcoverClient : IDisposable
                 continue;
             }
 
+            if (resp.StatusCode == HttpStatusCode.Forbidden ||
+                resp.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                throw new InvalidOperationException(
+                    "Hardcover API returned 403 Forbidden — your API token is invalid or expired. " +
+                    "Hardcover tokens reset on January 1st each year. " +
+                    "Go to hardcover.app/account/api, copy the current token, " +
+                    "and re-enter it in Settings → Plugins → Hardcover.");
+            }
+
             resp.EnsureSuccessStatusCode();
 
             var result = await resp.Content.ReadFromJsonAsync<GraphQlResponse<T>>(JsonOpts, ct);

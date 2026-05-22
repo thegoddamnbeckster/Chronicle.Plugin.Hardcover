@@ -48,7 +48,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             {
                 Key         = KeyApiToken,
                 Label       = "Hardcover API Token",
-                Description = "Paste the full token from hardcover.app/account/api — the value starting with \"Bearer eyJ…\". Chronicle strips the \"Bearer \" prefix automatically.",
+                Description = "Paste the full token from hardcover.app/account/api — the value starting with \"Bearer eyJ…\". Chronicle strips the \"Bearer \" prefix automatically. Hardcover tokens expire on January 1st each year; if you get 403 errors, go get a fresh token.",
                 Type        = SettingType.Password,
                 Required    = true,
             },
