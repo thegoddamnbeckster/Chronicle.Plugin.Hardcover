@@ -123,11 +123,14 @@ public sealed class HardcoverImportProvider : IImportProvider
             result.Add(new ImportedWatchEvent(
                 ExternalId:      $"hardcover:{ub.Book.Id}",
                 AdditionalIds:   BuildIds(ub),
-                MediaType:       "book",
+                MediaType:       "books",
                 Title:           ub.Book.Title,
                 Year:            ub.Book.ReleaseYear,
                 WatchedAt:       watchedAt,
-                ProgressPercent: 100.0
+                ProgressPercent: 100.0,
+                AuthorName:      ub.Book.Contributions?.FirstOrDefault()?.Author?.Name,
+                SeriesName:      ub.Book.BookSeries?.FirstOrDefault()?.Series?.Name,
+                SeriesPosition:  ub.Book.BookSeries?.FirstOrDefault()?.Position
             ));
         }
 
@@ -154,13 +157,16 @@ public sealed class HardcoverImportProvider : IImportProvider
             var ratedAt = ParseDate(ub.InsertedAt) ?? DateTimeOffset.UtcNow;
 
             result.Add(new ImportedRating(
-                ExternalId:    $"hardcover:{ub.Book.Id}",
-                AdditionalIds: BuildIds(ub),
-                MediaType:     "book",
-                Title:         ub.Book.Title,
-                Year:          ub.Book.ReleaseYear,
-                Rating:        chronicleRating,
-                RatedAt:       ratedAt));
+                ExternalId:     $"hardcover:{ub.Book.Id}",
+                AdditionalIds:  BuildIds(ub),
+                MediaType:      "books",
+                Title:          ub.Book.Title,
+                Year:           ub.Book.ReleaseYear,
+                Rating:         chronicleRating,
+                RatedAt:        ratedAt,
+                AuthorName:     ub.Book.Contributions?.FirstOrDefault()?.Author?.Name,
+                SeriesName:     ub.Book.BookSeries?.FirstOrDefault()?.Series?.Name,
+                SeriesPosition: ub.Book.BookSeries?.FirstOrDefault()?.Position));
         }
 
         return result;
@@ -182,12 +188,15 @@ public sealed class HardcoverImportProvider : IImportProvider
             var addedAt = ParseDate(ub.InsertedAt) ?? DateTimeOffset.UtcNow;
 
             result.Add(new ImportedWatchlistEntry(
-                ExternalId:    $"hardcover:{ub.Book.Id}",
-                AdditionalIds: BuildIds(ub),
-                MediaType:     "book",
-                Title:         ub.Book.Title,
-                Year:          ub.Book.ReleaseYear,
-                AddedAt:       addedAt));
+                ExternalId:     $"hardcover:{ub.Book.Id}",
+                AdditionalIds:  BuildIds(ub),
+                MediaType:      "books",
+                Title:          ub.Book.Title,
+                Year:           ub.Book.ReleaseYear,
+                AddedAt:        addedAt,
+                AuthorName:     ub.Book.Contributions?.FirstOrDefault()?.Author?.Name,
+                SeriesName:     ub.Book.BookSeries?.FirstOrDefault()?.Series?.Name,
+                SeriesPosition: ub.Book.BookSeries?.FirstOrDefault()?.Position));
         }
 
         return result;
