@@ -45,6 +45,8 @@ internal sealed class HardcoverClient : IDisposable
                 book {
                   id title release_year
                   book_mappings { isbn_13 isbn_10 }
+                  contributions(limit: 1) { author { name } }
+                  book_series(limit: 1) { position series { name } }
                 }
                 rating
                 user_book_reads(order_by: { finished_at: desc }, limit: 1) {
@@ -64,6 +66,8 @@ internal sealed class HardcoverClient : IDisposable
                 book {
                   id title release_year
                   book_mappings { isbn_13 isbn_10 }
+                  contributions(limit: 1) { author { name } }
+                  book_series(limit: 1) { position series { name } }
                 }
                 rating
                 inserted_at
@@ -81,11 +85,110 @@ internal sealed class HardcoverClient : IDisposable
                 book {
                   id title release_year
                   book_mappings { isbn_13 isbn_10 }
+                  contributions(limit: 1) { author { name } }
+                  book_series(limit: 1) { position series { name } }
                 }
                 inserted_at
               }
             }
             """, ct: ct);
+
+    // ── Search ────────────────────────────────────────────────────────────────
+
+    public Task<SearchData?> SearchAuthorsAsync(string query, int perPage = 10, CancellationToken ct = default) =>
+        QueryAsync<SearchData>("""
+            query SearchAuthors($q: String!, $n: Int!) {
+              search(query: $q, query_type: "Author", per_page: $n) { results }
+            }
+            """, new { q = query, n = perPage }, ct);
+
+    public Task<SearchData?> SearchSeriesAsync(string query, int perPage = 10, CancellationToken ct = default) =>
+        QueryAsync<SearchData>("""
+            query SearchSeries($q: String!, $n: Int!) {
+              search(query: $q, query_type: "Series", per_page: $n) { results }
+            }
+            """, new { q = query, n = perPage }, ct);
+
+    public Task<SearchData?> SearchBooksAsync(string query, int perPage = 10, CancellationToken ct = default) =>
+        QueryAsync<SearchData>("""
+            query SearchBooks($q: String!, $n: Int!) {
+              search(query: $q, query_type: "book", per_page: $n) { results }
+            }
+            """, new { q = query, n = perPage }, ct);
+
+    // ── Detail fetches ────────────────────────────────────────────────────────
+
+    public Task<AuthorData?> GetAuthorByIdAsync(int id, CancellationToken ct = default) =>
+        QueryAsync<AuthorData>("""
+            query GetAuthor($id: Int!) {
+              authors(where: { id: { _eq: $id } }) {
+                id name bio slug
+                image { url }
+              }
+            }
+            """, new { id }, ct);
+
+    public Task<SeriesData?> GetSeriesByIdAsync(int id, CancellationToken ct = default) =>
+        QueryAsync<SeriesData>("""
+            query GetSeries($id: Int!) {
+              series(where: { id: { _eq: $id } }) {
+                id name description slug is_completed
+                book_series(order_by: { position: asc }, limit: 1) {
+                  book { id title image { url } }
+                }
+              }
+            }
+            """, new { id }, ct);
+
+    public Task<BookDetailData?> GetBookByIdAsync(int id, CancellationToken ct = default) =>
+        QueryAsync<BookDetailData>("""
+            query GetBook($id: Int!) {
+              books(where: { id: { _eq: $id } }) {
+                id title subtitle description release_year pages rating ratings_count
+                cached_tags
+                image { url }
+                contributions { author { id name } contribution }
+                book_series { position series { id name } }
+                book_mappings { isbn_13 isbn_10 }
+                default_physical_edition {
+                  audio_seconds
+                  narrations { narrator { name } }
+                }
+              }
+            }
+            """, new { id }, ct);
+
+    // ── Slug resolution (Fix Match) ───────────────────────────────────────────
+
+    public Task<SlugLookupData<HcIdOnly>?> GetBookBySlugAsync(string slug, CancellationToken ct = default) =>
+        QueryAsync<SlugLookupData<HcIdOnly>>("""
+            query GetBookBySlug($slug: String!) {
+              books(where: { slug: { _eq: $slug } }, limit: 1) { id }
+            }
+            """, new { slug }, ct);
+
+    public Task<SlugLookupData<HcIdOnly>?> GetSeriesBySlugAsync(string slug, CancellationToken ct = default) =>
+        QueryAsync<SlugLookupData<HcIdOnly>>("""
+            query GetSeriesBySlug($slug: String!) {
+              series(where: { slug: { _eq: $slug } }, limit: 1) { id }
+            }
+            """, new { slug }, ct);
+
+    public Task<SlugLookupData<HcIdOnly>?> GetAuthorBySlugAsync(string slug, CancellationToken ct = default) =>
+        QueryAsync<SlugLookupData<HcIdOnly>>("""
+            query GetAuthorBySlug($slug: String!) {
+              authors(where: { slug: { _eq: $slug } }, limit: 1) { id }
+            }
+            """, new { slug }, ct);
+
+    // ── Binary download ───────────────────────────────────────────────────────
+
+    public async Task<byte[]> GetBytesAsync(string url, CancellationToken ct = default)
+    {
+        using var resp = await _http.GetAsync(url, ct);
+        resp.EnsureSuccessStatusCode();
+        return await resp.Content.ReadAsByteArrayAsync(ct);
+    }
 
     // ── Core request ──────────────────────────────────────────────────────────
 
