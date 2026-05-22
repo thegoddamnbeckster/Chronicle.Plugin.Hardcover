@@ -1,11 +1,30 @@
 {
   "plugin_id": "hardcover",
   "name": "Hardcover",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Michael Beck",
-  "description": "Import reading history, ratings and want-to-read list from Hardcover.app via GraphQL API.",
+  "description": "Book and audiobook metadata from Hardcover.app, plus reading history import.",
   "entry_type": "Chronicle.Plugin.Hardcover.HardcoverImportProvider",
   "min_chronicle_version": "0.1.0",
   "repository": "https://github.com/thegoddamnbeckster/Chronicle.Plugin.Hardcover",
-  "iconUrl": "https://hardcover.app/favicon.ico"
+  "iconUrl": "https://hardcover.app/favicon.ico",
+  "brandColorLight": "#8b5cf6",
+  "brandColorDark": "#7c3aed",
+  "fixMatchHint": "Paste a Hardcover book, series, or author URL (e.g. https://hardcover.app/books/the-way-of-kings)",
+  "background_tasks": [
+    {
+      "task_id": "import-all",
+      "display_name": "Import All",
+      "description": "Imports full reading history, ratings, and want-to-read list from Hardcover.",
+      "default_cron": "0 3 * * *",
+      "default_enabled": false
+    },
+    {
+      "task_id": "delta-sync",
+      "display_name": "Delta Sync",
+      "description": "Imports reading activity added since the last sync.",
+      "default_cron": "0 * * * *",
+      "default_enabled": true
+    }
+  ]
 }
