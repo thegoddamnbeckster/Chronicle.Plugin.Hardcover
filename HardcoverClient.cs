@@ -6,11 +6,28 @@ namespace Chronicle.Plugin.Hardcover;
 
 /// <summary>
 /// Thin HTTP wrapper around the Hardcover GraphQL endpoint.
-/// Handles Bearer-token authentication and 429 rate-limit back-off.
+/// Handles Bearer-token authentication, 429 rate-limit back-off, and proactive
+/// rate limiting (Hardcover allows 60 requests/minute = 1 req/sec).
+///
+/// Hardcover returns 403 for BOTH invalid tokens AND rate limiting, so the client
+/// treats 403 as a retryable error with exponential backoff — only surfacing a
+/// "token invalid/expired" error if 403 persists across all retry attempts.
 /// </summary>
 internal sealed class HardcoverClient : IDisposable
 {
     private const string GraphQlUrl = "https://api.hardcover.app/v1/graphql";
+
+    /// <summary>
+    /// Minimum milliseconds between successive requests to stay within Hardcover's
+    /// 60 req/min rate limit. Applied globally across all concurrent callers via a
+    /// static semaphore + timestamp.
+    /// </summary>
+    private const int MinRequestIntervalMs = 1100;   // 1.1 s — slightly above 1/s limit
+
+    // Static gate shared across all HardcoverClient instances in this process so that
+    // even multiple concurrent enrichment tasks respect the single rate limit.
+    private static readonly SemaphoreSlim   _rateSem  = new(1, 1);
+    private static          long            _lastTick  = 0;          // Environment.TickCount64
 
     private readonly HttpClient _http;
 
@@ -32,6 +49,27 @@ internal sealed class HardcoverClient : IDisposable
         _http.DefaultRequestHeaders.Add(
             "User-Agent", "Chronicle/1.0 (https://github.com/thegoddamnbeckster/Chronicle)");
         _http.Timeout = TimeSpan.FromSeconds(30);
+    }
+
+    /// <summary>
+    /// Acquires the global rate-limit gate, waits if the last request was less than
+    /// <see cref="MinRequestIntervalMs"/> ago, then updates the timestamp.
+    /// </summary>
+    private static async Task ThrottleAsync(CancellationToken ct)
+    {
+        await _rateSem.WaitAsync(ct);
+        try
+        {
+            var now  = Environment.TickCount64;
+            var wait = (int)(MinRequestIntervalMs - (now - _lastTick));
+            if (wait > 0)
+                await Task.Delay(wait, ct);
+            _lastTick = Environment.TickCount64;
+        }
+        finally
+        {
+            _rateSem.Release();
+        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -217,25 +255,41 @@ internal sealed class HardcoverClient : IDisposable
     {
         var body = new GraphQlRequest(query, variables);
 
+        // Retry delays for transient failures: 429 and 403 (Hardcover uses 403 for both
+        // invalid-token and rate-limit scenarios, so we retry with back-off first).
+        var retryDelays = new[] { TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60) };
+
         for (int attempt = 0; attempt < 3; attempt++)
         {
+            await ThrottleAsync(ct);
+
             using var resp = await _http.PostAsJsonAsync(GraphQlUrl, body, ct);
 
             if (resp.StatusCode == HttpStatusCode.TooManyRequests)
             {
-                var retryAfter = resp.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(60);
+                var retryAfter = resp.Headers.RetryAfter?.Delta ?? retryDelays[Math.Min(attempt, retryDelays.Length - 1)];
                 await Task.Delay(retryAfter, ct);
                 continue;
             }
 
+            // Hardcover returns 403 for BOTH invalid tokens AND rate limiting.
+            // Retry with back-off; if it persists across all attempts it's a bad token.
             if (resp.StatusCode == HttpStatusCode.Forbidden ||
                 resp.StatusCode == HttpStatusCode.Unauthorized)
             {
+                if (attempt < 2)
+                {
+                    await Task.Delay(retryDelays[attempt], ct);
+                    continue;
+                }
+
                 throw new InvalidOperationException(
-                    "Hardcover API returned 403 Forbidden — your API token is invalid or expired. " +
+                    "Hardcover API returned 403 Forbidden — your API token may be invalid or expired. " +
                     "Hardcover tokens reset on January 1st each year. " +
                     "Go to hardcover.app/account/api, copy the current token, " +
-                    "and re-enter it in Settings → Plugins → Hardcover.");
+                    "and re-enter it in Settings → Plugins → Hardcover. " +
+                    "If you just refreshed your token, the API may be rate-limiting — " +
+                    "wait a minute and try again.");
             }
 
             resp.EnsureSuccessStatusCode();
