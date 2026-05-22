@@ -7,7 +7,7 @@
   "entry_type": "Chronicle.Plugin.Hardcover.HardcoverImportProvider",
   "min_chronicle_version": "0.1.0",
   "repository": "https://github.com/thegoddamnbeckster/Chronicle.Plugin.Hardcover",
-  "iconUrl": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect x='3' y='3' width='18' height='18' rx='2' fill='%237c3aed'/><path fill='white' d='M7 7h10v2H7zm0 4h10v2H7zm0 4h7v2H7z'/></svg>",
+  "iconUrl": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHJlY3QgeD0nMycgeT0nMycgd2lkdGg9JzE4JyBoZWlnaHQ9JzE4JyByeD0nMicgZmlsbD0nIzdjM2FlZCcvPjxwYXRoIGZpbGw9J3doaXRlJyBkPSdNNyA3aDEwdjJIN3ptMCA0aDEwdjJIN3ptMCA0aDd2Mkg3eicvPjwvc3ZnPg==",
   "brandColorLight": "#8b5cf6",
   "brandColorDark": "#7c3aed",
   "fixMatchHint": "Paste a Hardcover book, series, or author URL (e.g. https://hardcover.app/books/the-way-of-kings)",
