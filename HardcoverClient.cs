@@ -117,7 +117,7 @@ internal sealed class HardcoverClient : IDisposable
         QueryAsync<AuthorData>("""
             query GetAuthorsByName($name: String!, $n: Int!) {
               authors(where: { name: { _ilike: $name } }, limit: $n) {
-                id name bio slug
+                id name bio slug alternate_names
                 image { url }
               }
             }
@@ -143,7 +143,7 @@ internal sealed class HardcoverClient : IDisposable
         QueryAsync<AuthorData>("""
             query GetAuthor($id: Int!) {
               authors(where: { id: { _eq: $id } }) {
-                id name bio slug
+                id name bio slug alternate_names
                 image { url }
               }
             }

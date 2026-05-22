@@ -109,11 +109,13 @@ internal class AuthorData
 
 internal class HcAuthor
 {
-    [JsonPropertyName("id")]    public int     Id   { get; set; }
-    [JsonPropertyName("name")]  public string  Name { get; set; } = string.Empty;
-    [JsonPropertyName("bio")]   public string? Bio  { get; set; }
-    [JsonPropertyName("slug")]  public string? Slug { get; set; }
-    [JsonPropertyName("image")] public HcImage? Image { get; set; }
+    [JsonPropertyName("id")]              public int      Id             { get; set; }
+    [JsonPropertyName("name")]            public string   Name           { get; set; } = string.Empty;
+    [JsonPropertyName("bio")]             public string?  Bio            { get; set; }
+    [JsonPropertyName("slug")]            public string?  Slug           { get; set; }
+    [JsonPropertyName("image")]           public HcImage? Image          { get; set; }
+    /// <summary>Pen names and name variants (e.g. ["K. J. Parker"] for Tom Holt).</summary>
+    [JsonPropertyName("alternate_names")] public string[]? AlternateNames { get; set; }
 }
 
 // ── Series ────────────────────────────────────────────────────────────────────

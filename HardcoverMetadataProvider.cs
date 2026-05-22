@@ -254,11 +254,14 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             ?? throw new InvalidOperationException($"Hardcover author {id} not found.");
         return new MediaMetadata
         {
-            ExternalId = $"hardcover:author:{author.Id}",
-            Source     = "hardcover",
-            Title      = author.Name,
-            Overview   = author.Bio,
-            PosterUrl  = author.Image?.Url,
+            ExternalId     = $"hardcover:author:{author.Id}",
+            Source         = "hardcover",
+            Title          = author.Name,
+            Overview       = author.Bio,
+            PosterUrl      = author.Image?.Url,
+            AlternateNames = author.AlternateNames is { Length: > 0 }
+                             ? [..author.AlternateNames]
+                             : [],
         };
     }
 
@@ -370,11 +373,14 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         if (author.Id <= 0) return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
         var meta = new MediaMetadata
         {
-            ExternalId = $"hardcover:author:{author.Id}",
-            Source     = "hardcover",
-            Title      = author.Name,
-            Overview   = author.Bio,
-            PosterUrl  = author.Image?.Url,
+            ExternalId     = $"hardcover:author:{author.Id}",
+            Source         = "hardcover",
+            Title          = author.Name,
+            Overview       = author.Bio,
+            PosterUrl      = author.Image?.Url,
+            AlternateNames = author.AlternateNames is { Length: > 0 }
+                             ? [..author.AlternateNames]
+                             : [],
         };
         var (score, reason) = ScoreTitle(ctx, author.Name);
         return new ScoredCandidate(meta, score, reason);
