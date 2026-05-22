@@ -13,6 +13,20 @@
   "fixMatchHint": "Paste a Hardcover book, series, or author URL (e.g. https://hardcover.app/books/the-way-of-kings)",
   "background_tasks": [
     {
+      "task_id": "fetch-missing-metadata",
+      "display_name": "Fetch Missing Metadata",
+      "description": "Looks up metadata from Hardcover for books and audiobooks that haven't been enriched yet.",
+      "default_cron": "0 4 * * *",
+      "default_enabled": true
+    },
+    {
+      "task_id": "resync-all-metadata",
+      "display_name": "Re-sync All Metadata",
+      "description": "Re-downloads all Hardcover metadata to pick up updated descriptions, cover images, and ratings.",
+      "default_cron": "0 3 * * 0",
+      "default_enabled": false
+    },
+    {
       "task_id": "import-all",
       "display_name": "Import All",
       "description": "Imports full reading history, ratings, and want-to-read list from Hardcover.",
