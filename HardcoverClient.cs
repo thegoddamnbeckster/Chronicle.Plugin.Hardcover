@@ -21,8 +21,14 @@ internal sealed class HardcoverClient : IDisposable
 
     public HardcoverClient(string apiToken)
     {
+        // The Hardcover API page shows the full "Bearer eyJ..." header value.
+        // Accept either the raw JWT or the full "Bearer {jwt}" string.
+        var jwt = apiToken.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? apiToken["Bearer ".Length..].Trim()
+            : apiToken.Trim();
+
         _http = new HttpClient();
-        _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiToken}");
+        _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {jwt}");
         _http.DefaultRequestHeaders.Add(
             "User-Agent", "Chronicle/1.0 (https://github.com/thegoddamnbeckster/Chronicle)");
         _http.Timeout = TimeSpan.FromSeconds(30);

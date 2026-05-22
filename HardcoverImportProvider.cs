@@ -48,8 +48,8 @@ public sealed class HardcoverImportProvider : IImportProvider
             {
                 Key         = KeyApiToken,
                 Label       = "Hardcover API Token",
-                Description = "Your personal API token from hardcover.app/account/api. " +
-                              "This is never shared — it is stored encrypted in Chronicle's database.",
+                Description = "Paste the full token from hardcover.app/account/api — the value starting with \"Bearer eyJ…\". " +
+                              "Chronicle strips the \"Bearer \" prefix automatically. Stored encrypted.",
                 Type        = SettingType.Password,
                 Required    = true,
             },

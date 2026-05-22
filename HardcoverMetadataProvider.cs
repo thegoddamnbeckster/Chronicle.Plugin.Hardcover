@@ -48,7 +48,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             {
                 Key         = KeyApiToken,
                 Label       = "Hardcover API Token",
-                Description = "Your personal API token from hardcover.app/account/api.",
+                Description = "Paste the full token from hardcover.app/account/api — the value starting with \"Bearer eyJ…\". Chronicle strips the \"Bearer \" prefix automatically.",
                 Type        = SettingType.Password,
                 Required    = true,
             },
