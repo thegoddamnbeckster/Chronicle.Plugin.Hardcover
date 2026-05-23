@@ -21,6 +21,9 @@
 
   <ItemGroup>
     <PackageReference Include="System.Text.Json" Version="9.0.*" />
+    <!-- Serilog is loaded by the Chronicle host — reference without bundling so the
+         plugin uses the same already-loaded instance (same pattern as Chronicle.Plugins). -->
+    <PackageReference Include="Serilog" Version="4.*" PrivateAssets="all" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <!-- Copy the plugin manifest alongside the DLL so Chronicle can discover it -->

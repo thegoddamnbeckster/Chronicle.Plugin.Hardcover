@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Serilog;
+using Serilog.Events;
 
 namespace Chronicle.Plugin.Hardcover;
 
@@ -29,7 +31,10 @@ internal sealed class HardcoverClient : IDisposable
     private static readonly SemaphoreSlim   _rateSem  = new(1, 1);
     private static          long            _lastTick  = 0;          // Environment.TickCount64
 
+    private static readonly ILogger _log = Log.ForContext<HardcoverClient>();
+
     private readonly HttpClient _http;
+    private readonly string     _tokenPreview;   // masked — first 12 JWT chars for diagnostics
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -44,11 +49,17 @@ internal sealed class HardcoverClient : IDisposable
             ? apiToken["Bearer ".Length..].Trim()
             : apiToken.Trim();
 
+        _tokenPreview = jwt.Length >= 12
+            ? jwt[..12] + "…"
+            : string.IsNullOrWhiteSpace(jwt) ? "(empty)" : "(short:" + jwt.Length + "chars)";
+
         _http = new HttpClient();
         _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {jwt}");
         _http.DefaultRequestHeaders.Add(
             "User-Agent", "Chronicle/1.0 (https://github.com/thegoddamnbeckster/Chronicle)");
         _http.Timeout = TimeSpan.FromSeconds(30);
+
+        _log.Information("HardcoverClient created — token prefix: {Prefix}", _tokenPreview);
     }
 
     /// <summary>
@@ -263,11 +274,15 @@ internal sealed class HardcoverClient : IDisposable
         {
             await ThrottleAsync(ct);
 
+            _log.Debug("Hardcover request attempt {Attempt}/3 token={Token}", attempt + 1, _tokenPreview);
+
             using var resp = await _http.PostAsJsonAsync(GraphQlUrl, body, ct);
 
             if (resp.StatusCode == HttpStatusCode.TooManyRequests)
             {
                 var retryAfter = resp.Headers.RetryAfter?.Delta ?? retryDelays[Math.Min(attempt, retryDelays.Length - 1)];
+                _log.Warning("Hardcover 429 TooManyRequests — waiting {Secs}s before retry (attempt {Attempt}/3)",
+                    retryAfter.TotalSeconds, attempt + 1);
                 await Task.Delay(retryAfter, ct);
                 continue;
             }
@@ -277,19 +292,28 @@ internal sealed class HardcoverClient : IDisposable
             if (resp.StatusCode == HttpStatusCode.Forbidden ||
                 resp.StatusCode == HttpStatusCode.Unauthorized)
             {
+                var responseBody = string.Empty;
+                try { responseBody = await resp.Content.ReadAsStringAsync(ct); }
+                catch { /* ignore read failure */ }
+
+                _log.Warning(
+                    "Hardcover {Status} on attempt {Attempt}/3 — token={Token} — response body: {Body}",
+                    (int)resp.StatusCode, attempt + 1, _tokenPreview,
+                    string.IsNullOrWhiteSpace(responseBody) ? "(empty)" : responseBody);
+
                 if (attempt < 2)
                 {
+                    _log.Warning("Backing off {Secs}s before retry", retryDelays[attempt].TotalSeconds);
                     await Task.Delay(retryDelays[attempt], ct);
                     continue;
                 }
 
                 throw new InvalidOperationException(
-                    "Hardcover API returned 403 Forbidden — your API token may be invalid or expired. " +
-                    "Hardcover tokens reset on January 1st each year. " +
+                    $"Hardcover API returned {(int)resp.StatusCode} after 3 attempts — " +
+                    $"token prefix: {_tokenPreview} — response: {(string.IsNullOrWhiteSpace(responseBody) ? "(empty)" : responseBody)}. " +
+                    "Your API token may be invalid or expired (tokens reset January 1st each year). " +
                     "Go to hardcover.app/account/api, copy the current token, " +
-                    "and re-enter it in Settings → Plugins → Hardcover. " +
-                    "If you just refreshed your token, the API may be rate-limiting — " +
-                    "wait a minute and try again.");
+                    "and re-enter it in Settings → Plugins → Hardcover.");
             }
 
             resp.EnsureSuccessStatusCode();
@@ -300,6 +324,7 @@ internal sealed class HardcoverClient : IDisposable
                 throw new InvalidOperationException(
                     $"Hardcover GraphQL error: {result.Errors[0].Message}");
 
+            _log.Debug("Hardcover request OK on attempt {Attempt}/3", attempt + 1);
             return result!.Data;
         }
 
