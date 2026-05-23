@@ -310,10 +310,48 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { slug }, ct);
 
+    /// <summary>
+    /// Slug lookup that returns full book detail — avoids the extra round-trip of
+    /// <see cref="GetBookBySlugAsync"/> + <see cref="GetBookByIdAsync"/>.
+    /// </summary>
+    public Task<BookDetailData?> GetBookBySlugFullAsync(string slug, CancellationToken ct = default) =>
+        QueryAsync<BookDetailData>("""
+            query GetBookBySlugFull($slug: String!) {
+              books(where: { slug: { _eq: $slug } }, limit: 1) {
+                id title subtitle description release_year pages rating ratings_count
+                cached_tags
+                image { url }
+                contributions { author { id name } contribution }
+                book_series { position series { id name } }
+                book_mappings { isbn_13 isbn_10 }
+                default_physical_edition {
+                  audio_seconds
+                  narrations { narrator { name } }
+                }
+              }
+            }
+            """, new { slug }, ct);
+
     public Task<SlugLookupData<HcIdOnly>?> GetSeriesBySlugAsync(string slug, CancellationToken ct = default) =>
         QueryAsync<SlugLookupData<HcIdOnly>>("""
             query GetSeriesBySlug($slug: String!) {
               series(where: { slug: { _eq: $slug } }, limit: 1) { id }
+            }
+            """, new { slug }, ct);
+
+    /// <summary>
+    /// Slug lookup that returns full series detail — avoids the extra round-trip of
+    /// <see cref="GetSeriesBySlugAsync"/> + <see cref="GetSeriesByIdAsync"/>.
+    /// </summary>
+    public Task<SeriesData?> GetSeriesBySlugFullAsync(string slug, CancellationToken ct = default) =>
+        QueryAsync<SeriesData>("""
+            query GetSeriesBySlugFull($slug: String!) {
+              series(where: { slug: { _eq: $slug } }, limit: 1) {
+                id name description slug is_completed
+                book_series(order_by: { position: asc }, limit: 1) {
+                  book { id title image { url } }
+                }
+              }
             }
             """, new { slug }, ct);
 

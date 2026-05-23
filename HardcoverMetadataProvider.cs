@@ -260,19 +260,47 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             if (candidates.Count > 0) return candidates;
         }
 
-        // ── Strategy 2: search-endpoint fallback (returns 0 today, kept for resilience) ──
+        // ── Strategy 2: slug-based lookup ────────────────────────────────────
+        // Converts names to Hardcover's slug format (lowercase-hyphenated), bypassing
+        // case sensitivity and punctuation differences entirely.
+        // "Echoes From the Moon" → "echoes-from-the-moon" → exact slug match.
+        var slugVariants = BuildSlugVariants(titles.Concat([ctx.Name]).ToList());
+
+        foreach (var slug in slugVariants)
+        {
+            var data   = await _client!.GetSeriesBySlugFullAsync(slug, ct);
+            var series = data?.Series ?? [];
+
+            _log.Information(
+                "Hardcover series slug '{Slug}' → {Count} hit(s) for '{Name}'",
+                slug, series.Length, ctx.Name);
+
+            if (series.Length == 0) continue;
+
+            var candidates = series
+                .Select(s => ScoreSeriesCandidateDirect(ctx, s))
+                .Where(c => c.Score > 0)
+                .OrderByDescending(c => c.Score)
+                .Take(10)
+                .ToList();
+
+            if (candidates.Count > 0) return candidates;
+        }
+
+        // ── Strategy 3: search-endpoint fallback (returns 0 today, kept for resilience) ──
         _log.Information(
-            "Hardcover series _eq found nothing for '{Name}' — trying search endpoint fallback",
+            "Hardcover series slug found nothing for '{Name}' — trying search endpoint fallback",
             ctx.Name);
 
-        foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
+        foreach (var title in titles.Where(t => IsUsableTitle(t)))
         {
-            var data = await _client!.SearchSeriesAsync(title, ct: ct);
-            var hits = ParseSearchResults(data?.Search?.Results ?? default);
+            var clean = StripAudiobookArtifacts(title);
+            var data  = await _client!.SearchSeriesAsync(clean, ct: ct);
+            var hits  = ParseSearchResults(data?.Search?.Results ?? default);
 
             _log.Information(
                 "Hardcover series search '{Query}' → {Count} hit(s) for '{Name}'",
-                title, hits.Count, ctx.Name);
+                clean, hits.Count, ctx.Name);
 
             if (hits.Count == 0) continue;
 
@@ -294,18 +322,45 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         var variants = new List<string>();
         var seen     = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
+        void Add(string? s)
         {
-            if (seen.Add(title)) variants.Add(title);
+            if (!IsUsableTitle(s)) return;
+            var clean = StripAudiobookArtifacts(s!);
+            if (!IsUsableTitle(clean)) return;
+            if (seen.Add(clean)) variants.Add(clean);
 
-            // Title-cased fallback
+            // Title-cased fallback (handles sources that preserve wrong casing)
             var tc = System.Globalization.CultureInfo.InvariantCulture.TextInfo
-                     .ToTitleCase(title.ToLowerInvariant());
-            if (!string.Equals(tc, title, StringComparison.Ordinal) && seen.Add(tc))
+                     .ToTitleCase(clean.ToLowerInvariant());
+            if (!string.Equals(tc, clean, StringComparison.Ordinal) && seen.Add(tc))
                 variants.Add(tc);
         }
 
+        foreach (var title in titles) Add(title);
         return variants;
+    }
+
+    /// <summary>
+    /// Generates deduplicated Hardcover slugs to try for slug-based lookups.
+    /// Slugs bypass case sensitivity and punctuation differences.
+    /// </summary>
+    private static List<string> BuildSlugVariants(IReadOnlyList<string> names)
+    {
+        var seen  = new HashSet<string>(StringComparer.Ordinal);
+        var slugs = new List<string>();
+
+        foreach (var name in names.Where(n => IsUsableTitle(n)))
+        {
+            var stripped = StripAudiobookArtifacts(name);
+            foreach (var candidate in new[] { name, stripped })
+            {
+                if (!IsUsableTitle(candidate)) continue;
+                var slug = ToHardcoverSlug(candidate);
+                if (slug.Length >= 3 && seen.Add(slug))
+                    slugs.Add(slug);
+            }
+        }
+        return slugs;
     }
 
     /// <summary>Scores an <see cref="HcSeries"/> from the direct Hasura table query.</summary>
@@ -399,7 +454,38 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             if (allCandidates.Any(c => c.Score >= 65)) goto done;
         }
 
-        // ── Strategy 2: search-endpoint fallback (returns 0 today, kept for resilience) ──
+        // ── Strategy 2: slug-based lookup ────────────────────────────────────
+        // Bypasses case sensitivity and punctuation. "Project Hail Mary (Unabridged)"
+        // strips to "Project Hail Mary" → slug "project-hail-mary" → exact match.
+        if (allCandidates.Count == 0)
+        {
+            var allTitles  = new List<string> { ctx.Name };
+            if (ctx.PreciseName is not null) allTitles.Insert(0, ctx.PreciseName);
+            allTitles.AddRange(titles);
+            var slugVariants = BuildSlugVariants(allTitles);
+
+            foreach (var slug in slugVariants)
+            {
+                var data  = await _client!.GetBookBySlugFullAsync(slug, ct);
+                var books = data?.Books ?? [];
+
+                _log.Information(
+                    "Hardcover book slug '{Slug}' → {Count} hit(s) for '{Name}'",
+                    slug, books.Length, ctx.Name);
+
+                if (books.Length == 0) continue;
+
+                var scored = books
+                    .Select(b => ScoreBookCandidateDirect(ctx, b, useYear))
+                    .Where(c => c.Score > 0)
+                    .ToList();
+
+                Merge(scored);
+                if (allCandidates.Any(c => c.Score >= 65)) goto done;
+            }
+        }
+
+        // ── Strategy 3: search-endpoint fallback (returns 0 today, kept for resilience) ──
         if (allCandidates.Count == 0)
         {
             var primaryTitle = ctx.PreciseName ?? titles.FirstOrDefault() ?? ctx.Name;
@@ -444,12 +530,14 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
         void Add(string? s)
         {
-            if (string.IsNullOrWhiteSpace(s)) return;
-            if (seen.Add(s)) variants.Add(s);
+            if (!IsUsableTitle(s)) return;
+            var clean = StripAudiobookArtifacts(s!);
+            if (!IsUsableTitle(clean)) return;
+            if (seen.Add(clean)) variants.Add(clean);
             // Title-cased fallback for sources that store lowercase titles
             var tc = System.Globalization.CultureInfo.InvariantCulture.TextInfo
-                     .ToTitleCase(s.ToLowerInvariant());
-            if (!string.Equals(tc, s, StringComparison.Ordinal) && seen.Add(tc))
+                     .ToTitleCase(clean.ToLowerInvariant());
+            if (!string.Equals(tc, clean, StringComparison.Ordinal) && seen.Add(tc))
                 variants.Add(tc);
         }
 
@@ -795,6 +883,47 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
     private static string NormalizeStr(string s) =>
         Regex.Replace(s.Trim(), @"[:\-,\.']", " ").Replace("  ", " ").Trim().ToLowerInvariant();
+
+    /// <summary>
+    /// Converts a name to the slug format Hardcover uses in its URLs:
+    /// lowercase, non-alphanumeric runs replaced with a single hyphen, leading/trailing hyphens stripped.
+    /// "Echoes From the Moon" → "echoes-from-the-moon"
+    /// "A.K. DuBoff"         → "ak-duboff"
+    /// </summary>
+    private static string ToHardcoverSlug(string name)
+    {
+        var s = name.ToLowerInvariant();
+        s = Regex.Replace(s, @"[^a-z0-9]+", "-");
+        return s.Trim('-');
+    }
+
+    /// <summary>
+    /// Removes audiobook-specific suffix tags that the file scanner appends to names
+    /// but that Hardcover does not include in series/book titles.
+    /// "Odds On (Unabridged)"   → "Odds On"
+    /// "Project Hail Mary (Unabridged)" → "Project Hail Mary"
+    /// </summary>
+    private static string StripAudiobookArtifacts(string name)
+    {
+        // Remove trailing format qualifiers
+        var s = Regex.Replace(name, @"\s*\((?:Un)?abridged\)\s*$", string.Empty, RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\s*\(Book\s+[\d.]+\)\s*$", string.Empty, RegexOptions.IgnoreCase);
+        return s.Trim();
+    }
+
+    /// <summary>
+    /// Returns true if <paramref name="title"/> looks like a clean, usable search term —
+    /// filters out file-scanner artifact strings such as
+    /// "- - (2024) - Echoes from the Moon - The Token, Book 1".
+    /// </summary>
+    private static bool IsUsableTitle(string? title, int maxLength = 80)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return false;
+        if (title.Length > maxLength)         return false;
+        // Starts with separator characters — file-path artefact
+        if (Regex.IsMatch(title, @"^[\-–—\s]+")) return false;
+        return true;
+    }
 
     private static int GetRatingsCount(MediaMetadata m)
     {
