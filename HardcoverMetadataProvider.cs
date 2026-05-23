@@ -1,5 +1,6 @@
 using Chronicle.Plugins;
 using Chronicle.Plugins.Models;
+using Serilog;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -11,6 +12,8 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     public string Name     => "Hardcover";
     public string Version  => "1.1.0";
     public string Author   => "Michael Beck";
+
+    private static readonly ILogger _log = Log.ForContext<HardcoverMetadataProvider>();
 
     private const string KeyApiToken = "api_token";   // shared with HardcoverImportProvider
     private HardcoverClient? _client;
@@ -86,13 +89,45 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     {
         // NOTE: Hardcover has disabled the _ilike operator on their public GraphQL API
         // ("ilike and related operations are not permitted on this server.").
-        // GetAuthorsByNameAsync used _ilike for case-insensitive name matching and is
-        // therefore unusable for search. We go straight to the search index, which is
-        // Hardcover's own endpoint and is not subject to this restriction.
+        // We use SearchAuthorsAsync (the search index) which is not restricted.
+        //
+        // To maximise match rate we build an expanded set of query variants per title:
+        //   1. Original name         "A.K. DuBoff"
+        //   2. Dots stripped         "AK DuBoff"   (dots in initials confuse some search indexes)
+        //   3. Surname only          "DuBoff"       (fallback when full-name search returns nothing)
+        // Scoring still uses the original ctx.Name, so a surname-only hit for "Tchaikovsky"
+        // that returns "Adrian Tchaikovsky" will score 60 (exact match after normalization).
+
+        var queries = new List<string>();
         foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
         {
-            var data = await _client!.SearchAuthorsAsync(title, ct: ct);
+            queries.Add(title);
+
+            // Variant 2: strip dots from initials ("A.K." → "AK")
+            var noDots = Regex.Replace(title, @"\.(\s|$)", " ").Trim();
+            noDots = Regex.Replace(noDots, @"\s{2,}", " ");
+            if (!string.Equals(noDots, title, StringComparison.OrdinalIgnoreCase))
+                queries.Add(noDots);
+
+            // Variant 3: surname only — last space-separated token, but only if it's
+            // at least 4 chars (avoids using a bare initial as the search term)
+            var words = title.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length > 1 && words[^1].Length >= 4)
+                queries.Add(words[^1]);
+        }
+
+        // Deduplicate while preserving order (best variant first)
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var query in queries.Where(q => seen.Add(q)))
+        {
+            var data = await _client!.SearchAuthorsAsync(query, ct: ct);
             var hits = ParseSearchResults(data?.Search?.Results ?? default);
+
+            _log.Debug(
+                "Hardcover author search '{Query}' → {HitCount} raw hit(s) for '{Name}'",
+                query, hits.Count, ctx.Name);
+
             if (hits.Count == 0) continue;
 
             var candidates = hits
@@ -101,6 +136,11 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 .OrderByDescending(c => c.Score)
                 .Take(10)
                 .ToList();
+
+            _log.Debug(
+                "Hardcover author search '{Query}' → {CandidateCount} scored candidate(s) for '{Name}'",
+                query, candidates.Count, ctx.Name);
+
             if (candidates.Any(c => c.Score >= 65)) return candidates;
             if (candidates.Count > 0) return candidates;
         }
