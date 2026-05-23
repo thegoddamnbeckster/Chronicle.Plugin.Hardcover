@@ -370,18 +370,40 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         if (series.Id <= 0)
             return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
 
-        var posterUrl = series.BookSeries?.FirstOrDefault()?.Book?.Image?.Url;
+        var firstBook = series.BookSeries?.FirstOrDefault()?.Book;
         var meta = new MediaMetadata
         {
             ExternalId = $"hardcover:series:{series.Id}",
             Source     = "hardcover",
             Title      = series.Name,
             Overview   = series.Description,
-            PosterUrl  = posterUrl,
+            PosterUrl  = firstBook?.Image?.Url,
         };
 
-        var (score, reason) = ScoreTitle(ctx, series.Name);
-        return new ScoredCandidate(meta, score, reason);
+        var (score, reasons) = ScoreTitle(ctx, series.Name);
+        var reasonList = new List<string> { reasons };
+
+        // Author match — use the first book's contributions to identify the series author.
+        // A match boosts confidence; a clear mismatch penalises so a same-named series by
+        // a different author doesn't tie with the correct one.
+        if (ctx.ParentName is not null && firstBook?.Contributions is { Length: > 0 })
+        {
+            var authorNames = string.Join(" ", firstBook.Contributions
+                .Where(c => c.Author is not null)
+                .Select(c => c.Author!.Name));
+
+            var pn = NormalizeStr(ctx.ParentName);
+            var an = NormalizeStr(authorNames);
+
+            if (an.Contains(pn, StringComparison.Ordinal))
+                { score += 20; reasonList.Add("author exact"); }
+            else if (an.Split(' ').Any(w => w.Length >= 3 && pn.Contains(w, StringComparison.Ordinal)))
+                { score += 10; reasonList.Add("author partial"); }
+            else
+                { score -= 15; reasonList.Add("author mismatch"); }
+        }
+
+        return new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasonList));
     }
 
     private async Task<IReadOnlyList<ScoredCandidate>> SearchBooksInternalAsync(

@@ -214,7 +214,10 @@ internal sealed class HardcoverClient : IDisposable
               series(where: { name: { _eq: $name } }, limit: $n) {
                 id name description slug is_completed
                 book_series(order_by: { position: asc }, limit: 1) {
-                  book { id title image { url } }
+                  book {
+                    id title image { url }
+                    contributions(limit: 3) { author { name } }
+                  }
                 }
               }
             }
@@ -349,7 +352,10 @@ internal sealed class HardcoverClient : IDisposable
               series(where: { slug: { _eq: $slug } }, limit: 1) {
                 id name description slug is_completed
                 book_series(order_by: { position: asc }, limit: 1) {
-                  book { id title image { url } }
+                  book {
+                    id title image { url }
+                    contributions(limit: 3) { author { name } }
+                  }
                 }
               }
             }
