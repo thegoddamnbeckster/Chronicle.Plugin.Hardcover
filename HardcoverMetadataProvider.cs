@@ -87,68 +87,146 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     private async Task<IReadOnlyList<ScoredCandidate>> SearchAuthorsInternalAsync(
         MediaSearchContext ctx, IReadOnlyList<string> titles, CancellationToken ct)
     {
-        // NOTE: Hardcover has disabled the _ilike operator on their public GraphQL API
-        // ("ilike and related operations are not permitted on this server.").
-        // We use SearchAuthorsAsync (the search index) which is not restricted.
+        // Hardcover author search situation (as of 2026):
+        //   • _ilike is banned: "ilike and related operations are not permitted on this server."
+        //   • search(query_type:"Author") returns 0 results for all queries (index broken).
+        //   • _eq works — confirmed by GetAuthorByIdAsync and slug lookups.
         //
-        // To maximise match rate we build an expanded set of query variants per title:
-        //   1. Original name         "A.K. DuBoff"
-        //   2. Dots stripped         "AK DuBoff"   (dots in initials confuse some search indexes)
-        //   3. Surname only          "DuBoff"       (fallback when full-name search returns nothing)
-        // Scoring still uses the original ctx.Name, so a surname-only hit for "Tchaikovsky"
-        // that returns "Adrian Tchaikovsky" will score 60 (exact match after normalization).
+        // Strategy 1: Direct table query using _eq (case-sensitive exact match).
+        //   Build name variants to improve coverage:
+        //     "A.K. DuBoff" → ["A.K. DuBoff", "AK DuBoff"]
+        //     "andy weir"   → ["andy weir", "Andy Weir"]   (title-case variant)
+        //
+        // Strategy 2: Book-based discovery.
+        //   Search for books using the author name; if a book hit's author_names field
+        //   contains our target, fetch that book's full contribution list to retrieve
+        //   the author's numeric ID. No separate author-lookup API call is needed
+        //   because FetchAuthorAsync is called later at enrichment time.
 
-        var queries = new List<string>();
-        foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
+        var nameVariants = BuildAuthorNameVariants(titles);
+
+        // ── Strategy 1: direct _eq table lookup ──────────────────────────────
+        foreach (var name in nameVariants)
         {
-            queries.Add(title);
-
-            // Variant 2: strip dots from initials ("A.K." → "AK")
-            var noDots = Regex.Replace(title, @"\.(\s|$)", " ").Trim();
-            noDots = Regex.Replace(noDots, @"\s{2,}", " ");
-            if (!string.Equals(noDots, title, StringComparison.OrdinalIgnoreCase))
-                queries.Add(noDots);
-
-            // Variant 3: surname only — last space-separated token, but only if it's
-            // at least 4 chars (avoids using a bare initial as the search term)
-            var words = title.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (words.Length > 1 && words[^1].Length >= 4)
-                queries.Add(words[^1]);
-        }
-
-        // Deduplicate while preserving order (best variant first)
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var query in queries.Where(q => seen.Add(q)))
-        {
-            var data = await _client!.SearchAuthorsAsync(query, ct: ct);
-            var hits = ParseSearchResults(data?.Search?.Results ?? default);
+            var data    = await _client!.GetAuthorsByNameExactAsync(name, ct: ct);
+            var authors = data?.Authors ?? [];
 
             _log.Information(
-                "Hardcover author search '{Query}' → {HitCount} raw hit(s) for '{Name}'",
-                query, hits.Count, ctx.Name);
+                "Hardcover author _eq '{Name}' → {Count} hit(s) for '{Query}'",
+                name, authors.Length, ctx.Name);
 
-            if (hits.Count == 0) continue;
+            if (authors.Length == 0) continue;
 
-            // Log the field names of the first hit so we can verify the JSON structure
-            _log.Information(
-                "Hardcover author search first hit fields: [{Fields}]",
-                string.Join(", ", hits[0].Keys));
-
-            var candidates = hits
-                .Select(h => ScoreAuthorCandidate(ctx, h))
+            var candidates = authors
+                .Select(a => ScoreAuthorCandidateDirect(ctx, a))
                 .Where(c => c.Score > 0)
                 .OrderByDescending(c => c.Score)
                 .Take(10)
                 .ToList();
 
             _log.Information(
-                "Hardcover author search '{Query}' → {CandidateCount} scored candidate(s) for '{Name}'",
-                query, candidates.Count, ctx.Name);
+                "Hardcover author _eq '{Name}' → {CandidateCount} scored candidate(s) for '{Query}'",
+                name, candidates.Count, ctx.Name);
 
-            if (candidates.Any(c => c.Score >= 65)) return candidates;
             if (candidates.Count > 0) return candidates;
         }
+
+        // ── Strategy 2: book-based author discovery ───────────────────────────
+        _log.Information(
+            "Hardcover author _eq found nothing for '{Name}' — trying book-based discovery",
+            ctx.Name);
+        return await DiscoverAuthorViaBooksAsync(ctx, titles, ct);
+    }
+
+    /// <summary>
+    /// Builds a deduplicated list of name variants to try for an exact-match author search.
+    /// </summary>
+    private static List<string> BuildAuthorNameVariants(IReadOnlyList<string> titles)
+    {
+        var variants = new List<string>();
+        var seen     = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
+        {
+            if (seen.Add(title)) variants.Add(title);
+
+            // Dots stripped: "A.K. DuBoff" → "AK DuBoff"
+            var noDots = Regex.Replace(title, @"\.(\s|$)", " ").Trim();
+            noDots     = Regex.Replace(noDots, @"\s{2,}", " ");
+            if (!string.Equals(noDots, title, StringComparison.OrdinalIgnoreCase) && seen.Add(noDots))
+                variants.Add(noDots);
+
+            // Title-case: "andy weir" → "Andy Weir" (handles sources that lowercase names)
+            var titleCase = System.Globalization.CultureInfo.InvariantCulture.TextInfo
+                .ToTitleCase(title.ToLowerInvariant());
+            if (!string.Equals(titleCase, title, StringComparison.Ordinal) && seen.Add(titleCase))
+                variants.Add(titleCase);
+        }
+
+        return variants;
+    }
+
+    /// <summary>
+    /// Searches for books by the author name, then extracts the author's ID from
+    /// the book's contribution list.  Used when the direct <c>_eq</c> name lookup
+    /// finds nothing (e.g. Hardcover stores the author under a slightly different
+    /// spelling than the file scanner recorded).
+    /// </summary>
+    private async Task<IReadOnlyList<ScoredCandidate>> DiscoverAuthorViaBooksAsync(
+        MediaSearchContext ctx, IReadOnlyList<string> titles, CancellationToken ct)
+    {
+        var primaryName = titles.FirstOrDefault(t => !string.IsNullOrWhiteSpace(t)) ?? ctx.Name;
+        var qn          = NormalizeStr(ctx.Name);
+
+        var bookData = await _client!.SearchBooksAsync(primaryName, perPage: 5, ct: ct);
+        var hits     = ParseSearchResults(bookData?.Search?.Results ?? default);
+
+        _log.Information(
+            "Hardcover book-based author discovery: '{Query}' → {Count} book hit(s)",
+            primaryName, hits.Count);
+
+        if (hits.Count == 0) return [];
+
+        foreach (var hit in hits)
+        {
+            // Skip books whose author_names don't contain our target
+            var authorNames = GetStr(hit, "author_names") ?? string.Empty;
+            if (!NormalizeStr(authorNames).Contains(qn, StringComparison.Ordinal)) continue;
+
+            var bookId = GetInt(hit, "id");
+            if (bookId <= 0) continue;
+
+            // Fetch book detail to get individual author IDs from contributions
+            var detail = await _client!.GetBookByIdAsync(bookId, ct);
+            var book   = detail?.Books?.FirstOrDefault();
+            if (book is null) continue;
+
+            foreach (var contrib in book.Contributions ?? [])
+            {
+                if (contrib.Author is null) continue;
+                var an = NormalizeStr(contrib.Author.Name);
+                if (!an.Contains(qn, StringComparison.Ordinal) &&
+                    !qn.Contains(an, StringComparison.Ordinal)) continue;
+
+                _log.Information(
+                    "Hardcover book-based author discovery: found '{AuthorName}' (id={Id}) via book {BookId}",
+                    contrib.Author.Name, contrib.Author.Id, bookId);
+
+                var meta = new MediaMetadata
+                {
+                    ExternalId = $"hardcover:author:{contrib.Author.Id}",
+                    Source     = "hardcover",
+                    Title      = contrib.Author.Name,
+                };
+                var (score, reason) = ScoreTitle(ctx, contrib.Author.Name);
+                if (score > 0)
+                    return [new ScoredCandidate(meta, score, $"{reason}, via-book")];
+            }
+        }
+
+        _log.Information(
+            "Hardcover book-based author discovery: no match found for '{Name}'",
+            ctx.Name);
         return [];
     }
 

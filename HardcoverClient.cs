@@ -188,6 +188,21 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { id }, ct);
 
+    /// <summary>
+    /// Case-sensitive exact name lookup via <c>_eq</c>.
+    /// Hardcover disabled <c>_ilike</c> and the <c>search(query_type:"Author")</c> endpoint
+    /// returns 0 results for all queries, so this is the primary author discovery path.
+    /// </summary>
+    public Task<AuthorData?> GetAuthorsByNameExactAsync(string name, int limit = 5, CancellationToken ct = default) =>
+        QueryAsync<AuthorData>("""
+            query GetAuthorsByNameExact($name: String!, $n: Int!) {
+              authors(where: { name: { _eq: $name } }, limit: $n) {
+                id name bio slug alternate_names
+                image { url }
+              }
+            }
+            """, new { name, n = limit }, ct);
+
     public Task<SeriesData?> GetSeriesByIdAsync(int id, CancellationToken ct = default) =>
         QueryAsync<SeriesData>("""
             query GetSeries($id: Int!) {
