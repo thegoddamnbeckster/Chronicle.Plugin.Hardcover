@@ -215,6 +215,29 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { id }, ct);
 
+    /// <summary>
+    /// Case-sensitive exact title lookup via <c>_eq</c>.
+    /// Returns full book detail (same shape as <see cref="GetBookByIdAsync"/>) so
+    /// that scoring can use year, author, and series without a second round-trip.
+    /// </summary>
+    public Task<BookDetailData?> GetBooksByTitleExactAsync(string title, int limit = 10, CancellationToken ct = default) =>
+        QueryAsync<BookDetailData>("""
+            query GetBooksByTitleExact($title: String!, $n: Int!) {
+              books(where: { title: { _eq: $title } }, limit: $n) {
+                id title subtitle description release_year pages rating ratings_count
+                cached_tags
+                image { url }
+                contributions { author { id name } contribution }
+                book_series { position series { id name } }
+                book_mappings { isbn_13 isbn_10 }
+                default_physical_edition {
+                  audio_seconds
+                  narrations { narrator { name } }
+                }
+              }
+            }
+            """, new { title, n = limit }, ct);
+
     public Task<BookDetailData?> GetBookByIdAsync(int id, CancellationToken ct = default) =>
         QueryAsync<BookDetailData>("""
             query GetBook($id: Int!) {

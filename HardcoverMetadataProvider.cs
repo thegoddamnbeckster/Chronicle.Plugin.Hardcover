@@ -259,45 +259,71 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     private async Task<IReadOnlyList<ScoredCandidate>> SearchBooksInternalAsync(
         MediaSearchContext ctx, IReadOnlyList<string> titles, CancellationToken ct)
     {
+        // Hardcover's search(query_type:"book") endpoint returns 0 results for all queries
+        // (confirmed: even "The Martian", "Ilium", etc. return 0 hits).
+        // Use direct _eq table lookup as the primary strategy; the search endpoint is kept
+        // as a fallback in case Hardcover restores it on their end.
+        //
+        // _eq is case-sensitive, so we try multiple title variants per query.
+        // Results carry full book detail (year, contributions, series) so scoring is rich.
+
         var allCandidates = new List<ScoredCandidate>();
+        var seenIds       = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        async Task<bool> TryQuery(string queryTitle, bool useYear)
+        void Merge(IEnumerable<ScoredCandidate> incoming)
         {
-            var q = ctx.ParentName is not null ? $"{queryTitle} {ctx.ParentName}" : queryTitle;
-            var data = await _client!.SearchBooksAsync(q, ct: ct);
-            var hits = ParseSearchResults(data?.Search?.Results ?? default);
-            if (hits.Count == 0 && ctx.ParentName is not null)
-            {
-                data = await _client!.SearchBooksAsync(queryTitle, ct: ct);
-                hits = ParseSearchResults(data?.Search?.Results ?? default);
-            }
-            if (hits.Count == 0) return false;
-
-            var scored = hits
-                .Select(h => ScoreBookCandidate(ctx, h, useYear))
-                .Where(c => c.Score > 0)
-                .ToList();
-            allCandidates.AddRange(scored);
-            return scored.Any(c => c.Score >= 65);
+            foreach (var c in incoming)
+                if (c.Metadata.ExternalId is not null && seenIds.Add(c.Metadata.ExternalId))
+                    allCandidates.Add(c);
         }
 
-        // Stage 1a: PreciseName + year
-        if (ctx.PreciseName is not null && ctx.Year.HasValue)
-            if (await TryQuery(ctx.PreciseName, true)) goto done;
+        var titleVariants = BuildBookTitleVariants(ctx, titles);
+        var useYear       = ctx.Year.HasValue;
 
-        // Stage 1b: AltTitles + year
-        if (ctx.Year.HasValue)
-            foreach (var t in titles)
-                if (!string.IsNullOrWhiteSpace(t) && await TryQuery(t, true)) goto done;
+        // ── Strategy 1: direct _eq table lookup ──────────────────────────────
+        foreach (var title in titleVariants)
+        {
+            var data  = await _client!.GetBooksByTitleExactAsync(title, ct: ct);
+            var books = data?.Books ?? [];
 
-        // Stage 2a: AltTitles, no year
-        foreach (var t in titles)
-            if (!string.IsNullOrWhiteSpace(t)) await TryQuery(t, false);
+            _log.Information(
+                "Hardcover book _eq '{Title}' → {Count} hit(s) for '{Name}'",
+                title, books.Length, ctx.Name);
 
-        // Stage 2b: FilenameStem
-        if (ctx.FilenameStem is not null &&
-            !string.Equals(ctx.FilenameStem, ctx.Name, StringComparison.OrdinalIgnoreCase))
-            await TryQuery(ctx.FilenameStem, false);
+            if (books.Length == 0) continue;
+
+            var scored = books
+                .Select(b => ScoreBookCandidateDirect(ctx, b, useYear))
+                .Where(c => c.Score > 0)
+                .ToList();
+
+            Merge(scored);
+
+            if (allCandidates.Any(c => c.Score >= 65)) goto done;
+        }
+
+        // ── Strategy 2: search-endpoint fallback (returns 0 today, kept for resilience) ──
+        if (allCandidates.Count == 0)
+        {
+            var primaryTitle = ctx.PreciseName ?? titles.FirstOrDefault() ?? ctx.Name;
+            var q            = ctx.ParentName is not null
+                               ? $"{primaryTitle} {ctx.ParentName}"
+                               : primaryTitle;
+
+            _log.Information(
+                "Hardcover book _eq found nothing for '{Name}' — trying search endpoint fallback '{Query}'",
+                ctx.Name, q);
+
+            var searchData = await _client!.SearchBooksAsync(q, ct: ct);
+            var hits       = ParseSearchResults(searchData?.Search?.Results ?? default);
+
+            _log.Information(
+                "Hardcover book search '{Query}' → {Count} hit(s) for '{Name}'",
+                q, hits.Count, ctx.Name);
+
+            if (hits.Count > 0)
+                Merge(hits.Select(h => ScoreBookCandidate(ctx, h, useYear)).Where(c => c.Score > 0));
+        }
 
         done:
         return allCandidates
@@ -307,6 +333,103 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             .ThenByDescending(c => GetRatingsCount(c.Metadata))
             .Take(10)
             .ToList();
+    }
+
+    /// <summary>
+    /// Builds a deduplicated ordered list of title strings to try for exact-match book lookup.
+    /// PreciseName (short title) goes first; AltTitles follow; FilenameStem is appended last.
+    /// A title-cased variant is added for each entry to handle lowercase source data.
+    /// </summary>
+    private static List<string> BuildBookTitleVariants(MediaSearchContext ctx, IReadOnlyList<string> titles)
+    {
+        var variants = new List<string>();
+        var seen     = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Add(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return;
+            if (seen.Add(s)) variants.Add(s);
+            // Title-cased fallback for sources that store lowercase titles
+            var tc = System.Globalization.CultureInfo.InvariantCulture.TextInfo
+                     .ToTitleCase(s.ToLowerInvariant());
+            if (!string.Equals(tc, s, StringComparison.Ordinal) && seen.Add(tc))
+                variants.Add(tc);
+        }
+
+        Add(ctx.PreciseName);
+        foreach (var t in titles) Add(t);
+        if (!string.Equals(ctx.FilenameStem, ctx.Name, StringComparison.OrdinalIgnoreCase))
+            Add(ctx.FilenameStem);
+
+        return variants;
+    }
+
+    /// <summary>
+    /// Scores an <see cref="HcBookDetail"/> returned by the direct Hasura table query.
+    /// Mirrors the logic of <see cref="ScoreBookCandidate"/> but works with strongly-typed
+    /// objects rather than the raw JSON dictionaries from the search endpoint.
+    /// </summary>
+    private static ScoredCandidate ScoreBookCandidateDirect(
+        MediaSearchContext ctx, HcBookDetail book, bool useYear)
+    {
+        if (book.Id <= 0)
+            return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
+
+        var meta = new MediaMetadata
+        {
+            ExternalId   = $"hardcover:{book.Id}",
+            Source       = "hardcover",
+            Title        = book.Title,
+            Year         = book.ReleaseYear,
+            PosterUrl    = book.Image?.Url,
+            Rating       = book.Rating,
+            ExtendedData = JsonSerializer.SerializeToElement(
+                               new { ratings_count = book.RatingsCount ?? 0 }),
+        };
+
+        var (score, reasons) = ScoreTitle(ctx, book.Title);
+        var reasonList = new List<string> { reasons };
+
+        // Year signals
+        if (useYear && ctx.Year.HasValue && meta.Year.HasValue)
+        {
+            if (ctx.Year == meta.Year)
+                { score += 20; reasonList.Add("year exact"); }
+            else if (Math.Abs(ctx.Year.Value - meta.Year.Value) == 1)
+                { score += 10; reasonList.Add("year ±1"); }
+            else
+                { score -= 10; reasonList.Add("year mismatch"); }
+        }
+
+        // PreciseName bonus
+        if (ctx.PreciseName is not null)
+        {
+            if (string.Equals(ctx.PreciseName, book.Title, StringComparison.OrdinalIgnoreCase))
+                { score += 15; reasonList.Add("precise exact"); }
+            else if (book.Title.Contains(ctx.PreciseName, StringComparison.OrdinalIgnoreCase))
+                { score += 5; reasonList.Add("precise partial"); }
+        }
+
+        // Author match against parent context
+        if (ctx.ParentName is not null)
+        {
+            var authorNames = string.Join(" ",
+                (book.Contributions ?? [])
+                    .Where(c => c.Author is not null)
+                    .Select(c => c.Author!.Name));
+
+            if (!string.IsNullOrEmpty(authorNames))
+            {
+                var pn = NormalizeStr(ctx.ParentName);
+                var an = NormalizeStr(authorNames);
+                if (an.Contains(pn, StringComparison.Ordinal))
+                    { score += 20; reasonList.Add("author exact"); }
+                else if (an.Split(' ').Any(w => w.Length >= 3 && pn.Contains(w)))
+                    { score += 10; reasonList.Add("author partial"); }
+            }
+        }
+
+        return new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasonList));
     }
 
     // ── GetByIdAsync ──────────────────────────────────────────────────────────
