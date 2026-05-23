@@ -631,8 +631,10 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 var an = NormalizeStr(authorNames);
                 if (an.Contains(pn, StringComparison.Ordinal))
                     { score += 20; reasonList.Add("author exact"); }
-                else if (an.Split(' ').Any(w => w.Length >= 3 && pn.Contains(w)))
+                else if (an.Split(' ').Any(w => w.Length >= 3 && pn.Contains(w, StringComparison.Ordinal)))
                     { score += 10; reasonList.Add("author partial"); }
+                else
+                    { score -= 15; reasonList.Add("author mismatch"); }
             }
         }
 
