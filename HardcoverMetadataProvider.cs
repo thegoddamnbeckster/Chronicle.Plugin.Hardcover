@@ -233,16 +233,47 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     private async Task<IReadOnlyList<ScoredCandidate>> SearchSeriesInternalAsync(
         MediaSearchContext ctx, IReadOnlyList<string> titles, CancellationToken ct)
     {
+        // search(query_type:"Series") returns 0 for all queries — same issue as author
+        // and book search endpoints. Use _eq table lookup as the primary strategy.
+
+        var nameVariants = BuildSeriesNameVariants(titles);
+
+        // ── Strategy 1: direct _eq table lookup ──────────────────────────────
+        foreach (var name in nameVariants)
+        {
+            var data   = await _client!.GetSeriesByNameExactAsync(name, ct: ct);
+            var series = data?.Series ?? [];
+
+            _log.Information(
+                "Hardcover series _eq '{Name}' → {Count} hit(s) for '{Query}'",
+                name, series.Length, ctx.Name);
+
+            if (series.Length == 0) continue;
+
+            var candidates = series
+                .Select(s => ScoreSeriesCandidateDirect(ctx, s))
+                .Where(c => c.Score > 0)
+                .OrderByDescending(c => c.Score)
+                .Take(10)
+                .ToList();
+
+            if (candidates.Count > 0) return candidates;
+        }
+
+        // ── Strategy 2: search-endpoint fallback (returns 0 today, kept for resilience) ──
+        _log.Information(
+            "Hardcover series _eq found nothing for '{Name}' — trying search endpoint fallback",
+            ctx.Name);
+
         foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
         {
-            var query = ctx.ParentName is not null ? $"{title} {ctx.ParentName}" : title;
-            var data  = await _client!.SearchSeriesAsync(query, ct: ct);
-            var hits  = ParseSearchResults(data?.Search?.Results ?? default);
-            if (hits.Count == 0 && ctx.ParentName is not null)
-            {
-                data = await _client!.SearchSeriesAsync(title, ct: ct);
-                hits = ParseSearchResults(data?.Search?.Results ?? default);
-            }
+            var data = await _client!.SearchSeriesAsync(title, ct: ct);
+            var hits = ParseSearchResults(data?.Search?.Results ?? default);
+
+            _log.Information(
+                "Hardcover series search '{Query}' → {Count} hit(s) for '{Name}'",
+                title, hits.Count, ctx.Name);
+
             if (hits.Count == 0) continue;
 
             var candidates = hits
@@ -251,9 +282,51 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 .OrderByDescending(c => c.Score)
                 .Take(10)
                 .ToList();
+
             if (candidates.Count > 0) return candidates;
         }
+
         return [];
+    }
+
+    private static List<string> BuildSeriesNameVariants(IReadOnlyList<string> titles)
+    {
+        var variants = new List<string>();
+        var seen     = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
+        {
+            if (seen.Add(title)) variants.Add(title);
+
+            // Title-cased fallback
+            var tc = System.Globalization.CultureInfo.InvariantCulture.TextInfo
+                     .ToTitleCase(title.ToLowerInvariant());
+            if (!string.Equals(tc, title, StringComparison.Ordinal) && seen.Add(tc))
+                variants.Add(tc);
+        }
+
+        return variants;
+    }
+
+    /// <summary>Scores an <see cref="HcSeries"/> from the direct Hasura table query.</summary>
+    private static ScoredCandidate ScoreSeriesCandidateDirect(
+        MediaSearchContext ctx, HcSeries series)
+    {
+        if (series.Id <= 0)
+            return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
+
+        var posterUrl = series.BookSeries?.FirstOrDefault()?.Book?.Image?.Url;
+        var meta = new MediaMetadata
+        {
+            ExternalId = $"hardcover:series:{series.Id}",
+            Source     = "hardcover",
+            Title      = series.Name,
+            Overview   = series.Description,
+            PosterUrl  = posterUrl,
+        };
+
+        var (score, reason) = ScoreTitle(ctx, series.Name);
+        return new ScoredCandidate(meta, score, reason);
     }
 
     private async Task<IReadOnlyList<ScoredCandidate>> SearchBooksInternalAsync(

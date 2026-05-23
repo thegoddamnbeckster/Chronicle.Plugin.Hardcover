@@ -203,6 +203,23 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { name, n = limit }, ct);
 
+    /// <summary>
+    /// Case-sensitive exact name lookup via <c>_eq</c>.
+    /// The <c>search(query_type:"Series")</c> endpoint returns 0 results for all queries,
+    /// so this is the primary series discovery path.
+    /// </summary>
+    public Task<SeriesData?> GetSeriesByNameExactAsync(string name, int limit = 10, CancellationToken ct = default) =>
+        QueryAsync<SeriesData>("""
+            query GetSeriesByNameExact($name: String!, $n: Int!) {
+              series(where: { name: { _eq: $name } }, limit: $n) {
+                id name description slug is_completed
+                book_series(order_by: { position: asc }, limit: 1) {
+                  book { id title image { url } }
+                }
+              }
+            }
+            """, new { name, n = limit }, ct);
+
     public Task<SeriesData?> GetSeriesByIdAsync(int id, CancellationToken ct = default) =>
         QueryAsync<SeriesData>("""
             query GetSeries($id: Int!) {
