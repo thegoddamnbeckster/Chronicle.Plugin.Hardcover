@@ -216,9 +216,37 @@ internal sealed class HardcoverClient : IDisposable
             """, new { id }, ct);
 
     /// <summary>
+    /// Exact title + author lookup via <c>_eq</c> on both fields.
+    /// Preferred when the author name is known — prevents false positives on
+    /// common titles and gives more targeted results.
+    /// </summary>
+    public Task<BookDetailData?> GetBooksByTitleAndAuthorAsync(
+        string title, string authorName, int limit = 10, CancellationToken ct = default) =>
+        QueryAsync<BookDetailData>("""
+            query GetBooksByTitleAndAuthor($title: String!, $author: String!, $n: Int!) {
+              books(where: {
+                title: { _eq: $title },
+                contributions: { author: { name: { _eq: $author } } }
+              }, limit: $n) {
+                id title subtitle description release_year pages rating ratings_count
+                cached_tags
+                image { url }
+                contributions { author { id name } contribution }
+                book_series { position series { id name } }
+                book_mappings { isbn_13 isbn_10 }
+                default_physical_edition {
+                  audio_seconds
+                  narrations { narrator { name } }
+                }
+              }
+            }
+            """, new { title, author = authorName, n = limit }, ct);
+
+    /// <summary>
     /// Case-sensitive exact title lookup via <c>_eq</c>.
-    /// Returns full book detail (same shape as <see cref="GetBookByIdAsync"/>) so
-    /// that scoring can use year, author, and series without a second round-trip.
+    /// Used as a fallback when the author name is unknown or when
+    /// <see cref="GetBooksByTitleAndAuthorAsync"/> returns no results
+    /// (e.g. author name casing differs between Chronicle and Hardcover).
     /// </summary>
     public Task<BookDetailData?> GetBooksByTitleExactAsync(string title, int limit = 10, CancellationToken ct = default) =>
         QueryAsync<BookDetailData>("""

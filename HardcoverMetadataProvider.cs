@@ -281,15 +281,39 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         var useYear       = ctx.Year.HasValue;
 
         // ── Strategy 1: direct _eq table lookup ──────────────────────────────
+        // When the author is known, include it in the filter — this prevents false
+        // positives on common titles and makes the match authoritative.
+        // Fall through to title-only if the author name doesn't match exactly
+        // (e.g. casing differences between Chronicle's stored name and Hardcover's).
         foreach (var title in titleVariants)
         {
-            var data  = await _client!.GetBooksByTitleExactAsync(title, ct: ct);
+            BookDetailData? data;
+
+            if (ctx.ParentName is not null)
+            {
+                data = await _client!.GetBooksByTitleAndAuthorAsync(title, ctx.ParentName, ct: ct);
+                _log.Information(
+                    "Hardcover book _eq title='{Title}' author='{Author}' → {Count} hit(s) for '{Name}'",
+                    title, ctx.ParentName, data?.Books?.Length ?? 0, ctx.Name);
+
+                // Author name didn't match exactly — retry on title alone
+                if (!(data?.Books?.Length > 0))
+                {
+                    data = await _client!.GetBooksByTitleExactAsync(title, ct: ct);
+                    _log.Information(
+                        "Hardcover book _eq title='{Title}' (author-fallback) → {Count} hit(s) for '{Name}'",
+                        title, data?.Books?.Length ?? 0, ctx.Name);
+                }
+            }
+            else
+            {
+                data = await _client!.GetBooksByTitleExactAsync(title, ct: ct);
+                _log.Information(
+                    "Hardcover book _eq title='{Title}' → {Count} hit(s) for '{Name}'",
+                    title, data?.Books?.Length ?? 0, ctx.Name);
+            }
+
             var books = data?.Books ?? [];
-
-            _log.Information(
-                "Hardcover book _eq '{Title}' → {Count} hit(s) for '{Name}'",
-                title, books.Length, ctx.Name);
-
             if (books.Length == 0) continue;
 
             var scored = books
