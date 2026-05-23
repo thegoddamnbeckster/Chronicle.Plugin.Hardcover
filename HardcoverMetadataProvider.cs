@@ -124,11 +124,16 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             var data = await _client!.SearchAuthorsAsync(query, ct: ct);
             var hits = ParseSearchResults(data?.Search?.Results ?? default);
 
-            _log.Debug(
+            _log.Information(
                 "Hardcover author search '{Query}' → {HitCount} raw hit(s) for '{Name}'",
                 query, hits.Count, ctx.Name);
 
             if (hits.Count == 0) continue;
+
+            // Log the field names of the first hit so we can verify the JSON structure
+            _log.Information(
+                "Hardcover author search first hit fields: [{Fields}]",
+                string.Join(", ", hits[0].Keys));
 
             var candidates = hits
                 .Select(h => ScoreAuthorCandidate(ctx, h))
@@ -137,7 +142,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 .Take(10)
                 .ToList();
 
-            _log.Debug(
+            _log.Information(
                 "Hardcover author search '{Query}' → {CandidateCount} scored candidate(s) for '{Name}'",
                 query, candidates.Count, ctx.Name);
 
