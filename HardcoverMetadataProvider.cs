@@ -84,30 +84,13 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     private async Task<IReadOnlyList<ScoredCandidate>> SearchAuthorsInternalAsync(
         MediaSearchContext ctx, IReadOnlyList<string> titles, CancellationToken ct)
     {
+        // NOTE: Hardcover has disabled the _ilike operator on their public GraphQL API
+        // ("ilike and related operations are not permitted on this server.").
+        // GetAuthorsByNameAsync used _ilike for case-insensitive name matching and is
+        // therefore unusable for search. We go straight to the search index, which is
+        // Hardcover's own endpoint and is not subject to this restriction.
         foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
         {
-            // ── Strategy 1: direct Hasura table query (more reliable than search index) ──
-            // Try exact case-insensitive match first, then contains match.
-            var directData = await _client!.GetAuthorsByNameAsync(title, ct: ct);
-            var directHits = directData?.Authors ?? [];
-            if (directHits.Length == 0)
-            {
-                directData = await _client!.GetAuthorsByNameAsync($"%{title}%", ct: ct);
-                directHits = directData?.Authors ?? [];
-            }
-
-            if (directHits.Length > 0)
-            {
-                var directCandidates = directHits
-                    .Select(a => ScoreAuthorCandidateDirect(ctx, a))
-                    .Where(c => c.Score > 0)
-                    .OrderByDescending(c => c.Score)
-                    .Take(10)
-                    .ToList();
-                if (directCandidates.Count > 0) return directCandidates;
-            }
-
-            // ── Strategy 2: fallback to Hardcover search index ─────────────────────────
             var data = await _client!.SearchAuthorsAsync(title, ct: ct);
             var hits = ParseSearchResults(data?.Search?.Results ?? default);
             if (hits.Count == 0) continue;
