@@ -400,7 +400,8 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             else if (an.Split(' ').Any(w => w.Length >= 3 && pn.Contains(w, StringComparison.Ordinal)))
                 { score += 10; reasonList.Add("author partial"); }
             else
-                { score -= 15; reasonList.Add("author mismatch"); }
+                // Hard reject: author context present, book's author clearly doesn't match.
+                return new ScoredCandidate(meta, 0, "author mismatch — hard reject");
         }
 
         return new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasonList));
@@ -634,7 +635,9 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 else if (an.Split(' ').Any(w => w.Length >= 3 && pn.Contains(w, StringComparison.Ordinal)))
                     { score += 10; reasonList.Add("author partial"); }
                 else
-                    { score -= 15; reasonList.Add("author mismatch"); }
+                    // Hard reject: we have the author in context AND the book's author clearly
+                    // doesn't match. No title or year signal can overcome a wrong author.
+                    return new ScoredCandidate(meta, 0, "author mismatch — hard reject");
             }
         }
 

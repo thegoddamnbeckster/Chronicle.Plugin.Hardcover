@@ -99,8 +99,7 @@ internal sealed class HardcoverClient : IDisposable
                 id
                 book {
                   id title release_year
-                  book_mappings { isbn_13 isbn_10 }
-                  contributions(limit: 1) { author { name } }
+                    contributions(limit: 1) { author { name } }
                   book_series(limit: 1) { position series { name } }
                 }
                 rating
@@ -120,8 +119,7 @@ internal sealed class HardcoverClient : IDisposable
                 id
                 book {
                   id title release_year
-                  book_mappings { isbn_13 isbn_10 }
-                  contributions(limit: 1) { author { name } }
+                    contributions(limit: 1) { author { name } }
                   book_series(limit: 1) { position series { name } }
                 }
                 rating
@@ -139,8 +137,7 @@ internal sealed class HardcoverClient : IDisposable
                 id
                 book {
                   id title release_year
-                  book_mappings { isbn_13 isbn_10 }
-                  contributions(limit: 1) { author { name } }
+                    contributions(limit: 1) { author { name } }
                   book_series(limit: 1) { position series { name } }
                 }
                 inserted_at
@@ -253,7 +250,6 @@ internal sealed class HardcoverClient : IDisposable
                 image { url }
                 contributions { author { id name } contribution }
                 book_series { position series { id name } }
-                book_mappings { isbn_13 isbn_10 }
                 default_physical_edition {
                   audio_seconds
                   narrations { narrator { name } }
@@ -277,7 +273,6 @@ internal sealed class HardcoverClient : IDisposable
                 image { url }
                 contributions { author { id name } contribution }
                 book_series { position series { id name } }
-                book_mappings { isbn_13 isbn_10 }
                 default_physical_edition {
                   audio_seconds
                   narrations { narrator { name } }
@@ -295,7 +290,6 @@ internal sealed class HardcoverClient : IDisposable
                 image { url }
                 contributions { author { id name } contribution }
                 book_series { position series { id name } }
-                book_mappings { isbn_13 isbn_10 }
                 default_physical_edition {
                   audio_seconds
                   narrations { narrator { name } }
@@ -326,7 +320,6 @@ internal sealed class HardcoverClient : IDisposable
                 image { url }
                 contributions { author { id name } contribution }
                 book_series { position series { id name } }
-                book_mappings { isbn_13 isbn_10 }
                 default_physical_edition {
                   audio_seconds
                   narrations { narrator { name } }
