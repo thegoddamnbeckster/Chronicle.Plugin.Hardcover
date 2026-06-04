@@ -1,7 +1,7 @@
 {
   "plugin_id": "hardcover",
   "name": "Hardcover",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "Michael Beck",
   "description": "Book and audiobook metadata from Hardcover.app, plus reading history import.",
   "entry_type": "Chronicle.Plugin.Hardcover.HardcoverImportProvider",

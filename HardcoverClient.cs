@@ -123,7 +123,7 @@ internal sealed class HardcoverClient : IDisposable
                   book_series(limit: 1) { position series { name } }
                 }
                 rating
-                inserted_at
+                updated_at
               }
             }
             """, ct: ct);
@@ -140,7 +140,7 @@ internal sealed class HardcoverClient : IDisposable
                     contributions(limit: 1) { author { name } }
                   book_series(limit: 1) { position series { name } }
                 }
-                inserted_at
+                updated_at
               }
             }
             """, ct: ct);
