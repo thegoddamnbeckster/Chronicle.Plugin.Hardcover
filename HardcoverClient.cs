@@ -252,7 +252,7 @@ internal sealed class HardcoverClient : IDisposable
                 book_series { position series { id name } }
                 default_physical_edition {
                   audio_seconds
-                  narrations { narrator { name } }
+                  # narrations removed — field no longer exists in Hardcover API
                 }
               }
             }
@@ -275,7 +275,7 @@ internal sealed class HardcoverClient : IDisposable
                 book_series { position series { id name } }
                 default_physical_edition {
                   audio_seconds
-                  narrations { narrator { name } }
+                  # narrations removed — field no longer exists in Hardcover API
                 }
               }
             }
@@ -292,7 +292,7 @@ internal sealed class HardcoverClient : IDisposable
                 book_series { position series { id name } }
                 default_physical_edition {
                   audio_seconds
-                  narrations { narrator { name } }
+                  # narrations removed — field no longer exists in Hardcover API
                 }
               }
             }
@@ -322,7 +322,7 @@ internal sealed class HardcoverClient : IDisposable
                 book_series { position series { id name } }
                 default_physical_edition {
                   audio_seconds
-                  narrations { narrator { name } }
+                  # narrations removed — field no longer exists in Hardcover API
                 }
               }
             }
