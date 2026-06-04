@@ -140,7 +140,7 @@ internal sealed class HardcoverClient : IDisposable
                     contributions(limit: 1) { author { name } }
                   book_series(limit: 1) { position series { name } }
                 }
-                updated_at
+                date_added
               }
             }
             """, ct: ct);

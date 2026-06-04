@@ -154,7 +154,7 @@ public sealed class HardcoverImportProvider : IImportProvider
             var chronicleRating = (int)Math.Round(ub.Rating.Value * 2, MidpointRounding.AwayFromZero);
             chronicleRating = Math.Clamp(chronicleRating, 1, 10);
 
-            var ratedAt = ParseDate(ub.InsertedAt) ?? DateTimeOffset.UtcNow;
+            var ratedAt = ParseDate(ub.UpdatedAt) ?? DateTimeOffset.UtcNow;
 
             result.Add(new ImportedRating(
                 ExternalId:     $"hardcover:{ub.Book.Id}",
@@ -185,7 +185,7 @@ public sealed class HardcoverImportProvider : IImportProvider
         {
             if (ub.Book is null) continue;
 
-            var addedAt = ParseDate(ub.InsertedAt) ?? DateTimeOffset.UtcNow;
+            var addedAt = ParseDate(ub.DateAdded) ?? ParseDate(ub.UpdatedAt) ?? DateTimeOffset.UtcNow;
 
             result.Add(new ImportedWatchlistEntry(
                 ExternalId:     $"hardcover:{ub.Book.Id}",
