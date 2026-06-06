@@ -650,23 +650,40 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     {
         EnsureConfigured();
 
-        // Normalise Hardcover URLs to typed IDs
-        if (externalId.StartsWith("https://hardcover.app/", StringComparison.OrdinalIgnoreCase))
+        // Normalise Hardcover URLs to typed IDs.
+        // Accept both https:// and http:// so that pasting from a browser (which may
+        // redirect http → https) still works.
+        if (externalId.StartsWith("https://hardcover.app/", StringComparison.OrdinalIgnoreCase) ||
+            externalId.StartsWith("http://hardcover.app/",  StringComparison.OrdinalIgnoreCase))
             externalId = await ResolveHardcoverUrlAsync(externalId, ct);
 
         if (externalId.StartsWith("hardcover:author:", StringComparison.OrdinalIgnoreCase))
         {
-            var id = int.Parse(externalId["hardcover:author:".Length..]);
+            var raw = externalId["hardcover:author:".Length..];
+            if (!int.TryParse(raw, out var id))
+                throw new ArgumentException($"Invalid Hardcover author ID '{raw}' in: {externalId}");
             return await FetchAuthorAsync(id, ct);
         }
-        if (externalId.StartsWith("hardcover:series:", StringComparison.OrdinalIgnoreCase))
+        else if (externalId.StartsWith("hardcover:series:", StringComparison.OrdinalIgnoreCase))
         {
-            var id = int.Parse(externalId["hardcover:series:".Length..]);
+            var raw = externalId["hardcover:series:".Length..];
+            if (!int.TryParse(raw, out var id))
+                throw new ArgumentException($"Invalid Hardcover series ID '{raw}' in: {externalId}");
             return await FetchSeriesAsync(id, ct);
         }
+        else if (externalId.StartsWith("hardcover:", StringComparison.OrdinalIgnoreCase))
         {
-            var id = int.Parse(externalId["hardcover:".Length..]);
+            var raw = externalId["hardcover:".Length..];
+            if (!int.TryParse(raw, out var id))
+                throw new ArgumentException($"Invalid Hardcover book ID '{raw}' in: {externalId}");
             return await FetchBookAsync(id, ct);
+        }
+        else
+        {
+            throw new ArgumentException(
+                $"Invalid Hardcover external ID: '{externalId}'. " +
+                "Expected hardcover:{{id}}, hardcover:series:{{id}}, hardcover:author:{{id}}, " +
+                "or a hardcover.app URL.");
         }
     }
 
@@ -674,7 +691,10 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     {
         var uri      = new Uri(url);
         var segments = uri.AbsolutePath.Trim('/').Split('/');
-        if (segments.Length < 2) return url;
+        if (segments.Length < 2 || string.IsNullOrWhiteSpace(segments[0]))
+            throw new ArgumentException(
+                $"Cannot extract content type from Hardcover URL: '{url}'. " +
+                "Expected /books/{{slug}}, /series/{{slug}}, or /authors/{{slug}}.");
 
         var entityType = segments[0];
         var slug       = segments[1];
@@ -684,7 +704,9 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             "books"   => $"hardcover:{(await _client!.GetBookBySlugAsync(slug, ct))?.Books?.FirstOrDefault()?.Id ?? throw new ArgumentException($"Book slug '{slug}' not found")}",
             "series"  => $"hardcover:series:{(await _client!.GetSeriesBySlugAsync(slug, ct))?.Series?.FirstOrDefault()?.Id ?? throw new ArgumentException($"Series slug '{slug}' not found")}",
             "authors" => $"hardcover:author:{(await _client!.GetAuthorBySlugAsync(slug, ct))?.Authors?.FirstOrDefault()?.Id ?? throw new ArgumentException($"Author slug '{slug}' not found")}",
-            _ => url
+            _ => throw new ArgumentException(
+                $"Unrecognised Hardcover URL path '{entityType}' in: {url}. " +
+                "Expected /books/{{slug}}, /series/{{slug}}, or /authors/{{slug}}.")
         };
     }
 
