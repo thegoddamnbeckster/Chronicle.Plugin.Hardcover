@@ -1,5 +1,7 @@
 # Chronicle.Plugin.Hardcover
 
+[![Latest Release](https://img.shields.io/github/v/release/thegoddamnbeckster/Chronicle.Plugin.Hardcover?label=Chronicle.Plugin.Hardcover&color=a0522d)](https://github.com/thegoddamnbeckster/Chronicle.Plugin.Hardcover/releases/latest)
+
 Book and audiobook metadata plugin for [Chronicle](https://github.com/thegoddamnbeckster/Chronicle).
 
 Fetches book metadata — titles, overviews, cover art, authors, series, ratings — from [Hardcover.app](https://hardcover.app/) via the Hardcover GraphQL API. Also imports your reading history, ratings, and want-to-read list.
