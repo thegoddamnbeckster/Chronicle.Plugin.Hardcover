@@ -89,10 +89,17 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         }
 
         // No parent context — this is an open Add Media search. Run all three in
-        // parallel and merge, so the user gets books, series, and authors in one list.
-        var bookTask   = SearchBooksInternalAsync(context, titles, ct);
-        var seriesTask = SearchSeriesInternalAsync(context, titles, ct);
-        var authorTask = SearchAuthorsInternalAsync(context, titles, ct);
+        // parallel and merge. Each is wrapped so a timeout/error in one doesn't
+        // discard results from the others.
+        static async Task<IReadOnlyList<ScoredCandidate>> Safe(Task<IReadOnlyList<ScoredCandidate>> t)
+        {
+            try { return await t; }
+            catch { return []; }
+        }
+
+        var bookTask   = Safe(SearchBooksInternalAsync(context, titles, ct));
+        var seriesTask = Safe(SearchSeriesInternalAsync(context, titles, ct));
+        var authorTask = Safe(SearchAuthorsInternalAsync(context, titles, ct));
         await Task.WhenAll(bookTask, seriesTask, authorTask);
 
         return [.. bookTask.Result, .. seriesTask.Result, .. authorTask.Result];
@@ -488,7 +495,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
             Merge(scored);
 
-            if (allCandidates.Any(c => c.Score >= 65)) goto done;
+            if (allCandidates.Any(c => c.Score >= 55)) goto done;
         }
 
         // ── Strategy 2: slug-based lookup ────────────────────────────────────
@@ -518,7 +525,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                     .ToList();
 
                 Merge(scored);
-                if (allCandidates.Any(c => c.Score >= 65)) goto done;
+                if (allCandidates.Any(c => c.Score >= 55)) goto done;
             }
         }
 

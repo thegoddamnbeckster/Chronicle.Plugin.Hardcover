@@ -24,7 +24,7 @@ internal sealed class HardcoverClient : IDisposable
     /// 60 req/min rate limit. Applied globally across all concurrent callers via a
     /// static semaphore + timestamp.
     /// </summary>
-    private const int MinRequestIntervalMs = 1100;   // 1.1 s — slightly above 1/s limit
+    private const int MinRequestIntervalMs = 250;    // 4 req/s — Hardcover's effective limit is higher; 1100ms was too conservative and caused Add Media searches to time out
 
     // Static gate shared across all HardcoverClient instances in this process so that
     // even multiple concurrent enrichment tasks respect the single rate limit.
@@ -170,7 +170,7 @@ internal sealed class HardcoverClient : IDisposable
     public Task<SearchData?> SearchBooksAsync(string query, int perPage = 10, CancellationToken ct = default) =>
         QueryAsync<SearchData>("""
             query SearchBooks($q: String!, $n: Int!) {
-              search(query: $q, query_type: "book", per_page: $n) { results }
+              search(query: $q, query_type: "Book", per_page: $n) { results }
             }
             """, new { q = query, n = perPage }, ct);
 
