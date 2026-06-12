@@ -51,6 +51,7 @@ internal class UserBooksData
 internal class UserBook
 {
     [JsonPropertyName("id")]              public int        Id          { get; set; }
+    [JsonPropertyName("status_id")]       public int?       StatusId    { get; set; }
     [JsonPropertyName("book")]            public HcBook?    Book        { get; set; }
     [JsonPropertyName("rating")]          public double?    Rating      { get; set; }
     [JsonPropertyName("updated_at")]      public string?    UpdatedAt   { get; set; }

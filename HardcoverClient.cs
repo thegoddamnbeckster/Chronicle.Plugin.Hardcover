@@ -95,8 +95,9 @@ internal sealed class HardcoverClient : IDisposable
         QueryAsync<UserBooksData>(
             """
             query GetReadBooks {
-              user_books(where: { status_id: { _eq: 3 } }, limit: 1000) {
+              user_books(where: { status_id: { _eq: 3 } }, limit: 2000) {
                 id
+                status_id
                 book {
                   id title release_year
                     contributions(limit: 1) { author { name } }

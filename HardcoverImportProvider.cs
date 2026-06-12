@@ -109,16 +109,24 @@ public sealed class HardcoverImportProvider : IImportProvider
         var data = await GetOrCreateClient().GetReadBooksAsync(ct);
         var books = data?.UserBooks ?? [];
 
+
         var result = new List<ImportedWatchEvent>();
         foreach (var ub in books)
         {
             if (ub.Book is null) continue;
 
-            // Determine watch date: use the most recent finished_at, then inserted_at, then now
-            var finishedStr = ub.Reads?.FirstOrDefault()?.FinishedAt;
-            var watchedAt   = ParseDate(finishedStr) ?? DateTimeOffset.UtcNow;
+            // Client-side guard: only process books explicitly marked Read (status_id = 3).
+            // The server-side where-clause may be silently ignored if the field name is wrong.
+            if (ub.StatusId.HasValue && ub.StatusId.Value != 3) continue;
 
-            if (since.HasValue && watchedAt < since.Value) continue;
+            // Only emit a watch event when there is a real finished_at date.
+            // Falling back to UtcNow produces a new timestamp on every sync run,
+            // defeating the deduplication check and flooding interaction_events.
+            var finishedStr = ub.Reads?.FirstOrDefault()?.FinishedAt;
+            var watchedAt   = ParseDate(finishedStr);
+            if (watchedAt is null) continue;
+
+            if (since.HasValue && watchedAt.Value < since.Value) continue;
 
             result.Add(new ImportedWatchEvent(
                 ExternalId:      $"hardcover:{ub.Book.Id}",
@@ -126,7 +134,7 @@ public sealed class HardcoverImportProvider : IImportProvider
                 MediaType:       "books",
                 Title:           ub.Book.Title,
                 Year:            ub.Book.ReleaseYear,
-                WatchedAt:       watchedAt,
+                WatchedAt:       watchedAt.Value,
                 ProgressPercent: 100.0,
                 AuthorName:      ub.Book.Contributions?.FirstOrDefault()?.Author?.Name,
                 SeriesName:      ub.Book.BookSeries?.FirstOrDefault()?.Series?.Name,
