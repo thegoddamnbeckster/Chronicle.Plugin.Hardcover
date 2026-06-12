@@ -76,12 +76,26 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             ? context.AltTitles
             : (IReadOnlyList<string>)[context.Name];
 
-        return context.HierarchyLevel switch
+        // When enriching a known item, route to the correct level.
+        // When ParentName is set, the hierarchy context is unambiguous.
+        if (context.ParentName is not null)
         {
-            0 => await SearchAuthorsInternalAsync(context, titles, ct),
-            1 => await SearchSeriesInternalAsync(context, titles, ct),
-            _ => await SearchBooksInternalAsync(context, titles, ct),
-        };
+            return context.HierarchyLevel switch
+            {
+                0 => await SearchAuthorsInternalAsync(context, titles, ct),
+                1 => await SearchSeriesInternalAsync(context, titles, ct),
+                _ => await SearchBooksInternalAsync(context, titles, ct),
+            };
+        }
+
+        // No parent context — this is an open Add Media search. Run all three in
+        // parallel and merge, so the user gets books, series, and authors in one list.
+        var bookTask   = SearchBooksInternalAsync(context, titles, ct);
+        var seriesTask = SearchSeriesInternalAsync(context, titles, ct);
+        var authorTask = SearchAuthorsInternalAsync(context, titles, ct);
+        await Task.WhenAll(bookTask, seriesTask, authorTask);
+
+        return [.. bookTask.Result, .. seriesTask.Result, .. authorTask.Result];
     }
 
     private async Task<IReadOnlyList<ScoredCandidate>> SearchAuthorsInternalAsync(
@@ -807,8 +821,9 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     private void EnsureConfigured()
     {
         if (_client is null)
-            throw new InvalidOperationException(
-                "HardcoverMetadataProvider has not been configured. Call Configure() first.");
+            throw new Chronicle.Plugins.PluginAuthException(
+                "chronicle.plugin.hardcover",
+                "Hardcover plugin is not configured — set an API token in Settings → Plugins → Hardcover.");
     }
 
     private static ScoredCandidate ScoreAuthorCandidate(
