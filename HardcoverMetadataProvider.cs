@@ -520,13 +520,25 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
             foreach (var slug in slugVariants)
             {
-                var data  = await _client!.GetBookBySlugFullAsync(slug, ct);
-                var books = data?.Books ?? [];
+                // Resolve the slug to an id with the thin id-only query, then fetch full
+                // detail by id — deliberately NOT GetBookBySlugFullAsync's single combined
+                // query. Both filter on the same `slug: {_eq: $slug}`, but they can return
+                // DIFFERENT book rows for the identical slug: confirmed by comparing this
+                // path's output against Fix Match (which already does this same two-step
+                // resolution) on a book Hardcover had reassigned/merged the slug for — the
+                // combined rich query kept returning the old orphaned duplicate while the
+                // thin id lookup (and the website itself) resolved to the current one.
+                var idData = await _client!.GetBookBySlugAsync(slug, ct);
+                var slugId = idData?.Books?.FirstOrDefault()?.Id;
 
                 _log.Information(
-                    "Hardcover book slug '{Slug}' → {Count} hit(s) for '{Name}'",
-                    slug, books.Length, ctx.Name);
+                    "Hardcover book slug '{Slug}' → id={Id} for '{Name}'",
+                    slug, slugId?.ToString() ?? "(none)", ctx.Name);
 
+                if (slugId is null or <= 0) continue;
+
+                var data  = await _client!.GetBookByIdAsync(slugId.Value, ct);
+                var books = data?.Books ?? [];
                 if (books.Length == 0) continue;
 
                 var scored = books
