@@ -212,6 +212,10 @@ internal class HcEdition
 {
     [JsonPropertyName("audio_seconds")]  public int?           AudioSeconds { get; set; }
     [JsonPropertyName("narrations")]     public HcNarration[]? Narrations   { get; set; }
+    // Many books have no image on the book record itself — Hardcover attaches cover art
+    // to editions, and the website assembles a displayed cover from one of those rather
+    // than the bare book entity. Queried as a fallback when book-level image is null.
+    [JsonPropertyName("image")]          public HcImage?       Image        { get; set; }
 }
 
 internal class HcNarration

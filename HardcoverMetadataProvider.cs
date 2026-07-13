@@ -612,13 +612,19 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         if (book.Id <= 0)
             return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
 
+        // The book record itself often has no image — Hardcover attaches cover art to
+        // editions, and the website assembles a displayed cover from one of those rather
+        // than the bare book entity. Fall back to the default physical edition's image
+        // when the book-level one is absent.
+        var posterUrl = book.Image?.Url ?? book.DefaultEdition?.Image?.Url;
+
         var meta = new MediaMetadata
         {
             ExternalId   = $"hardcover:{book.Id}",
             Source       = "hardcover",
             Title        = book.Title,
             Year         = book.ReleaseYear,
-            PosterUrl    = book.Image?.Url,
+            PosterUrl    = posterUrl,
             Rating       = book.Rating,
             ExtendedData = JsonSerializer.SerializeToElement(
                                new { ratings_count = book.RatingsCount ?? 0 }),
@@ -675,7 +681,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         // this, a well-curated candidate with cover art can lose a tie to an empty duplicate
         // purely on result order. Kept small relative to title/year/author signals (max ~60+)
         // so it only ever breaks near-ties, never overrides a genuinely better match.
-        if (!string.IsNullOrEmpty(book.Image?.Url))
+        if (!string.IsNullOrEmpty(posterUrl))
             { score += 5; reasonList.Add("has cover art"); }
         if ((book.RatingsCount ?? 0) > 0)
             { score += 2; reasonList.Add("has ratings"); }
