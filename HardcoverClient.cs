@@ -325,24 +325,9 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { slug }, ct);
 
-    /// <summary>
-    /// Slug lookup that returns full series detail — avoids the extra round-trip of
-    /// <see cref="GetSeriesBySlugAsync"/> + <see cref="GetSeriesByIdAsync"/>.
-    /// </summary>
-    public Task<SeriesData?> GetSeriesBySlugFullAsync(string slug, CancellationToken ct = default) =>
-        QueryAsync<SeriesData>("""
-            query GetSeriesBySlugFull($slug: String!) {
-              series(where: { slug: { _eq: $slug } }, limit: 1) {
-                id name description slug is_completed
-                book_series(order_by: { position: asc }, limit: 1) {
-                  book {
-                    id title image { url }
-                    contributions(limit: 3) { author { name } }
-                  }
-                }
-              }
-            }
-            """, new { slug }, ct);
+    // NOTE: deliberately no "GetSeriesBySlugFull" combined slug+fields query — same reasoning
+    // as the removed book equivalent. Always resolve via ResolveSeriesSlugAsync in
+    // HardcoverMetadataProvider (the two-step id-then-detail lookup).
 
     public Task<SlugLookupData<HcIdOnly>?> GetAuthorBySlugAsync(string slug, CancellationToken ct = default) =>
         QueryAsync<SlugLookupData<HcIdOnly>>("""

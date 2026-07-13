@@ -289,12 +289,15 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
         foreach (var slug in slugVariants)
         {
-            var data   = await _client!.GetSeriesBySlugFullAsync(slug, ct);
-            var series = data?.Series ?? [];
+            // Same resolution ResolveHardcoverUrlAsync (Fix Match) uses — see
+            // ResolveSeriesSlugAsync's doc comment for why this must not be reimplemented
+            // as a one-shot combined query.
+            var resolved = await ResolveSeriesSlugAsync(slug, ct);
+            var series   = resolved is null ? [] : new[] { resolved };
 
             _log.Information(
-                "Hardcover series slug '{Slug}' → {Count} hit(s) for '{Name}'",
-                slug, series.Length, ctx.Name);
+                "Hardcover series slug '{Slug}' → {Result} for '{Name}'",
+                slug, resolved is null ? "no match" : $"id={resolved.Id}", ctx.Name);
 
             if (series.Length == 0) continue;
 
@@ -392,14 +395,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
 
         var firstBook = series.BookSeries?.FirstOrDefault()?.Book;
-        var meta = new MediaMetadata
-        {
-            ExternalId = $"hardcover:series:{series.Id}",
-            Source     = "hardcover",
-            Title      = series.Name,
-            Overview   = series.Description,
-            PosterUrl  = firstBook?.Image?.Url,
-        };
+        var meta = BuildSeriesMetadata(series);
 
         var (score, reasons) = ScoreTitle(ctx, series.Name);
         var reasonList = new List<string> { reasons };
@@ -699,15 +695,25 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         if (externalId.StartsWith("https://hardcover.app/", StringComparison.OrdinalIgnoreCase) ||
             externalId.StartsWith("http://hardcover.app/",  StringComparison.OrdinalIgnoreCase))
         {
-            // Book URLs resolve straight to full metadata via the same ResolveBookSlugAsync
-            // automatic search uses — not routed back through the generic id-string dispatch
-            // below, so there's exactly one place a book slug ever gets resolved.
-            var bookSlug = TryExtractBookSlug(externalId);
+            // Book and series URLs resolve straight to full metadata via the same
+            // ResolveBookSlugAsync/ResolveSeriesSlugAsync automatic search uses — not routed
+            // back through the generic id-string dispatch below, so there's exactly one place
+            // each kind of slug ever gets resolved. (Authors have no automatic-search slug
+            // strategy to drift against, so that case stays on the generic string dispatch.)
+            var bookSlug = TryExtractSlug(externalId, "books");
             if (bookSlug is not null)
             {
                 var book = await ResolveBookSlugAsync(bookSlug, ct)
                     ?? throw new ArgumentException($"Book slug '{bookSlug}' not found");
                 return BuildBookMetadata(book);
+            }
+
+            var seriesSlug = TryExtractSlug(externalId, "series");
+            if (seriesSlug is not null)
+            {
+                var series = await ResolveSeriesSlugAsync(seriesSlug, ct)
+                    ?? throw new ArgumentException($"Series slug '{seriesSlug}' not found");
+                return BuildSeriesMetadata(series);
             }
 
             externalId = await ResolveHardcoverUrlAsync(externalId, ct);
@@ -743,15 +749,16 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         }
     }
 
-    /// <summary>Returns the slug for a /books/{slug} Hardcover URL, or null for any other shape.</summary>
-    private static string? TryExtractBookSlug(string url)
+    /// <summary>Returns the slug for a /{entityType}/{slug} Hardcover URL, or null for any other shape.</summary>
+    private static string? TryExtractSlug(string url, string entityType)
     {
         var segments = new Uri(url).AbsolutePath.Trim('/').Split('/');
-        return segments.Length >= 2 && segments[0] == "books" ? segments[1] : null;
+        return segments.Length >= 2 && segments[0] == entityType ? segments[1] : null;
     }
 
-    /// <summary>Resolves a /series/{slug} or /authors/{slug} Hardcover URL to a typed ID string.
-    /// Book URLs are handled separately in GetByIdAsync via ResolveBookSlugAsync — see there.</summary>
+    /// <summary>Resolves a /authors/{slug} Hardcover URL to a typed ID string.
+    /// Book and series URLs are handled separately in GetByIdAsync via
+    /// ResolveBookSlugAsync/ResolveSeriesSlugAsync — see there.</summary>
     private async Task<string> ResolveHardcoverUrlAsync(string url, CancellationToken ct)
     {
         var uri      = new Uri(url);
@@ -766,7 +773,6 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
         return entityType switch
         {
-            "series"  => $"hardcover:series:{(await _client!.GetSeriesBySlugAsync(slug, ct))?.Series?.FirstOrDefault()?.Id ?? throw new ArgumentException($"Series slug '{slug}' not found")}",
             "authors" => $"hardcover:author:{(await _client!.GetAuthorBySlugAsync(slug, ct))?.Authors?.FirstOrDefault()?.Id ?? throw new ArgumentException($"Author slug '{slug}' not found")}",
             _ => throw new ArgumentException(
                 $"Unrecognised Hardcover URL path '{entityType}' in: {url}. " +
@@ -797,6 +803,27 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         var data   = await _client!.GetSeriesByIdAsync(id, ct);
         var series = data?.Series?.FirstOrDefault()
             ?? throw new InvalidOperationException($"Hardcover series {id} not found.");
+        return BuildSeriesMetadata(series);
+    }
+
+    /// <summary>
+    /// Resolves a series slug (e.g. the "hyperion-cantos" in hardcover.app/series/hyperion-cantos)
+    /// to full series detail via the thin id-only query, then a fetch by id. See
+    /// ResolveBookSlugAsync's doc comment — same reasoning, same bug class, applies here too.
+    /// Shared by Fix Match's pasted-URL handling and automatic search's slug strategy.
+    /// </summary>
+    private async Task<HcSeries?> ResolveSeriesSlugAsync(string slug, CancellationToken ct)
+    {
+        var idData = await _client!.GetSeriesBySlugAsync(slug, ct);
+        var id = idData?.Series?.FirstOrDefault()?.Id;
+        if (id is null or <= 0) return null;
+        var data = await _client!.GetSeriesByIdAsync(id.Value, ct);
+        return data?.Series?.FirstOrDefault();
+    }
+
+    /// <summary>The one canonical HcSeries -> MediaMetadata conversion — see BuildBookMetadata.</summary>
+    private static MediaMetadata BuildSeriesMetadata(HcSeries series)
+    {
         var posterUrl = series.BookSeries?.FirstOrDefault()?.Book?.Image?.Url;
         return new MediaMetadata
         {
