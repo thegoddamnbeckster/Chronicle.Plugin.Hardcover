@@ -495,13 +495,23 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
             Merge(scored);
 
-            if (allCandidates.Any(c => c.Score >= 55)) goto done;
+            // NOTE: deliberately no early-exit here even once a candidate clears the
+            // acceptance threshold. Hardcover's title index can return a different (often
+            // sparser, orphaned/duplicate) book row than the one its slug resolves to for
+            // the exact same title — short-circuiting here meant Strategy 2 (slug) never
+            // ran once Strategy 1 found anything "good enough", so a stale duplicate with
+            // no cover art could win purely because it was the first result, without the
+            // better-populated candidate ever entering the pool to compete on the
+            // data-completeness tiebreaker below.
         }
 
         // ── Strategy 2: slug-based lookup ────────────────────────────────────
         // Bypasses case sensitivity and punctuation. "Project Hail Mary (Unabridged)"
         // strips to "Project Hail Mary" → slug "project-hail-mary" → exact match.
-        if (allCandidates.Count == 0)
+        // Always attempted (not just when Strategy 1 found nothing) — see note above.
+        // Every candidate still goes through the same ScoreBookCandidateDirect scoring
+        // and author hard-reject, so widening the pool here can only ever help pick a
+        // better-populated match for the same title/author, never accept a wrong book.
         {
             var allTitles  = new List<string> { ctx.Name };
             if (ctx.PreciseName is not null) allTitles.Insert(0, ctx.PreciseName);
@@ -525,7 +535,6 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                     .ToList();
 
                 Merge(scored);
-                if (allCandidates.Any(c => c.Score >= 55)) goto done;
             }
         }
 
@@ -552,7 +561,6 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 Merge(hits.Select(h => ScoreBookCandidate(ctx, h, useYear)).Where(c => c.Score > 0));
         }
 
-        done:
         return allCandidates
             .GroupBy(c => c.Metadata.ExternalId)
             .Select(g => g.OrderByDescending(c => c.Score).First())
