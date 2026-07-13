@@ -520,33 +520,19 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
             foreach (var slug in slugVariants)
             {
-                // Resolve the slug to an id with the thin id-only query, then fetch full
-                // detail by id — deliberately NOT GetBookBySlugFullAsync's single combined
-                // query. Both filter on the same `slug: {_eq: $slug}`, but they can return
-                // DIFFERENT book rows for the identical slug: confirmed by comparing this
-                // path's output against Fix Match (which already does this same two-step
-                // resolution) on a book Hardcover had reassigned/merged the slug for — the
-                // combined rich query kept returning the old orphaned duplicate while the
-                // thin id lookup (and the website itself) resolved to the current one.
-                var idData = await _client!.GetBookBySlugAsync(slug, ct);
-                var slugId = idData?.Books?.FirstOrDefault()?.Id;
+                // Same resolution ResolveHardcoverUrlAsync (Fix Match) uses — see
+                // ResolveBookSlugAsync's doc comment for why this must not be reimplemented
+                // as a one-shot combined query.
+                var book = await ResolveBookSlugAsync(slug, ct);
 
                 _log.Information(
-                    "Hardcover book slug '{Slug}' → id={Id} for '{Name}'",
-                    slug, slugId?.ToString() ?? "(none)", ctx.Name);
+                    "Hardcover book slug '{Slug}' → {Result} for '{Name}'",
+                    slug, book is null ? "no match" : $"id={book.Id}", ctx.Name);
 
-                if (slugId is null or <= 0) continue;
+                if (book is null) continue;
 
-                var data  = await _client!.GetBookByIdAsync(slugId.Value, ct);
-                var books = data?.Books ?? [];
-                if (books.Length == 0) continue;
-
-                var scored = books
-                    .Select(b => ScoreBookCandidateDirect(ctx, b, useYear))
-                    .Where(c => c.Score > 0)
-                    .ToList();
-
-                Merge(scored);
+                var scored = ScoreBookCandidateDirect(ctx, book, useYear);
+                if (scored.Score > 0) Merge([scored]);
             }
         }
 
@@ -712,7 +698,20 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         // redirect http → https) still works.
         if (externalId.StartsWith("https://hardcover.app/", StringComparison.OrdinalIgnoreCase) ||
             externalId.StartsWith("http://hardcover.app/",  StringComparison.OrdinalIgnoreCase))
+        {
+            // Book URLs resolve straight to full metadata via the same ResolveBookSlugAsync
+            // automatic search uses — not routed back through the generic id-string dispatch
+            // below, so there's exactly one place a book slug ever gets resolved.
+            var bookSlug = TryExtractBookSlug(externalId);
+            if (bookSlug is not null)
+            {
+                var book = await ResolveBookSlugAsync(bookSlug, ct)
+                    ?? throw new ArgumentException($"Book slug '{bookSlug}' not found");
+                return BuildBookMetadata(book);
+            }
+
             externalId = await ResolveHardcoverUrlAsync(externalId, ct);
+        }
 
         if (externalId.StartsWith("hardcover:author:", StringComparison.OrdinalIgnoreCase))
         {
@@ -744,6 +743,15 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         }
     }
 
+    /// <summary>Returns the slug for a /books/{slug} Hardcover URL, or null for any other shape.</summary>
+    private static string? TryExtractBookSlug(string url)
+    {
+        var segments = new Uri(url).AbsolutePath.Trim('/').Split('/');
+        return segments.Length >= 2 && segments[0] == "books" ? segments[1] : null;
+    }
+
+    /// <summary>Resolves a /series/{slug} or /authors/{slug} Hardcover URL to a typed ID string.
+    /// Book URLs are handled separately in GetByIdAsync via ResolveBookSlugAsync — see there.</summary>
     private async Task<string> ResolveHardcoverUrlAsync(string url, CancellationToken ct)
     {
         var uri      = new Uri(url);
@@ -758,7 +766,6 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
         return entityType switch
         {
-            "books"   => $"hardcover:{(await _client!.GetBookBySlugAsync(slug, ct))?.Books?.FirstOrDefault()?.Id ?? throw new ArgumentException($"Book slug '{slug}' not found")}",
             "series"  => $"hardcover:series:{(await _client!.GetSeriesBySlugAsync(slug, ct))?.Series?.FirstOrDefault()?.Id ?? throw new ArgumentException($"Series slug '{slug}' not found")}",
             "authors" => $"hardcover:author:{(await _client!.GetAuthorBySlugAsync(slug, ct))?.Authors?.FirstOrDefault()?.Id ?? throw new ArgumentException($"Author slug '{slug}' not found")}",
             _ => throw new ArgumentException(
@@ -807,12 +814,44 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         var data = await _client!.GetBookByIdAsync(id, ct);
         var book = data?.Books?.FirstOrDefault()
             ?? throw new InvalidOperationException($"Hardcover book {id} not found.");
+        return BuildBookMetadata(book);
+    }
 
+    /// <summary>
+    /// Resolves a book slug (e.g. the "endymion" in hardcover.app/books/endymion) to full
+    /// book detail via the thin id-only query, then a fetch by id — deliberately NOT a single
+    /// combined slug+fields query. Both filter on the same slug, but they can return DIFFERENT
+    /// book rows for the identical slug (confirmed: Hardcover had reassigned/merged a slug and
+    /// the combined query kept returning the old orphaned duplicate while this two-step
+    /// resolution, matching what hardcover.app's own routing does, found the current one).
+    /// Shared by Fix Match's pasted-URL handling and automatic search's slug strategy so the
+    /// two can never independently drift back into different resolution logic.
+    /// </summary>
+    private async Task<HcBookDetail?> ResolveBookSlugAsync(string slug, CancellationToken ct)
+    {
+        var idData = await _client!.GetBookBySlugAsync(slug, ct);
+        var id = idData?.Books?.FirstOrDefault()?.Id;
+        if (id is null or <= 0) return null;
+        var data = await _client!.GetBookByIdAsync(id.Value, ct);
+        return data?.Books?.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Converts a Hardcover book detail into Chronicle's generic metadata shape. The one
+    /// canonical conversion — used by every path that ends up with an HcBookDetail (id fetch,
+    /// slug resolution, Fix Match) — so poster/field mapping can't drift between them.
+    /// </summary>
+    private static MediaMetadata BuildBookMetadata(HcBookDetail book)
+    {
         var genres      = ExtractGenres(book.CachedTags);
         var cast        = BuildCast(book.Contributions, book.DefaultEdition?.Narrations);
         var seriesEntry = book.BookSeries?.FirstOrDefault();
         var isbn13      = book.BookMappings?.FirstOrDefault()?.Isbn13;
         var isbn10      = book.BookMappings?.FirstOrDefault()?.Isbn10;
+        // The book record itself often has no image — Hardcover attaches cover art to
+        // editions, and the website assembles a displayed cover from one of those rather
+        // than the bare book entity. Fall back to the default physical edition's image.
+        var posterUrl   = book.Image?.Url ?? book.DefaultEdition?.Image?.Url;
 
         var extData = new Dictionary<string, object?>();
         if (book.Pages.HasValue)        extData["pages"]           = book.Pages;
@@ -829,7 +868,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             Title          = book.Title,
             Overview       = book.Description,
             Year           = book.ReleaseYear,
-            PosterUrl      = book.Image?.Url,
+            PosterUrl      = posterUrl,
             Rating         = book.Rating,
             Genres         = genres,
             Cast           = cast,

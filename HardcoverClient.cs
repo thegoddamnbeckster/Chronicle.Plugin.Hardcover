@@ -311,27 +311,12 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { slug }, ct);
 
-    /// <summary>
-    /// Slug lookup that returns full book detail — avoids the extra round-trip of
-    /// <see cref="GetBookBySlugAsync"/> + <see cref="GetBookByIdAsync"/>.
-    /// </summary>
-    public Task<BookDetailData?> GetBookBySlugFullAsync(string slug, CancellationToken ct = default) =>
-        QueryAsync<BookDetailData>("""
-            query GetBookBySlugFull($slug: String!) {
-              books(where: { slug: { _eq: $slug } }, limit: 1) {
-                id title subtitle description release_year pages rating ratings_count
-                cached_tags
-                image { url }
-                contributions { author { id name } contribution }
-                book_series { position series { id name } }
-                default_physical_edition {
-                  audio_seconds
-                  image { url }
-                  # narrations removed — field no longer exists in Hardcover API
-                }
-              }
-            }
-            """, new { slug }, ct);
+    // NOTE: deliberately no "GetBookBySlugFull" combined slug+fields query. One existed here
+    // and both HardcoverMetadataProvider.SearchBooksInternalAsync and Fix Match's URL handling
+    // used to call it — but it silently returned a different (stale/orphaned) book row than
+    // GetBookBySlugAsync + GetBookByIdAsync for the identical slug filter, on the same book,
+    // at the same time. Always resolve a slug via ResolveBookSlugAsync (the two-step id-then-
+    // detail lookup below) — never reintroduce a combined query here.
 
     public Task<SlugLookupData<HcIdOnly>?> GetSeriesBySlugAsync(string slug, CancellationToken ct = default) =>
         QueryAsync<SlugLookupData<HcIdOnly>>("""
