@@ -662,6 +662,16 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             }
         }
 
+        // Data-completeness tiebreaker. Hardcover can have multiple book rows for what is
+        // really the same title/edition (duplicate community entries, sparse stubs) — without
+        // this, a well-curated candidate with cover art can lose a tie to an empty duplicate
+        // purely on result order. Kept small relative to title/year/author signals (max ~60+)
+        // so it only ever breaks near-ties, never overrides a genuinely better match.
+        if (!string.IsNullOrEmpty(book.Image?.Url))
+            { score += 5; reasonList.Add("has cover art"); }
+        if ((book.RatingsCount ?? 0) > 0)
+            { score += 2; reasonList.Add("has ratings"); }
+
         return new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasonList));
     }
 
@@ -937,6 +947,12 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             else if (an.Split(' ').Any(w => pn.Contains(w)))
                 { score += 10; reasonList.Add("author partial"); }
         }
+
+        // Data-completeness tiebreaker — see ScoreBookCandidateDirect for rationale.
+        if (!string.IsNullOrEmpty(imageUrl))
+            { score += 5; reasonList.Add("has cover art"); }
+        if (GetInt(hit, "ratings_count") > 0)
+            { score += 2; reasonList.Add("has ratings"); }
 
         return new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasonList));
     }
