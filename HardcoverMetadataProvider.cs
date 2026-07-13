@@ -453,16 +453,17 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         // positives on common titles and makes the match authoritative.
         // Fall through to title-only if the author name doesn't match exactly
         // (e.g. casing differences between Chronicle's stored name and Hardcover's).
+        var authorName = GetBookAuthorName(ctx);
         foreach (var title in titleVariants)
         {
             BookDetailData? data;
 
-            if (ctx.ParentName is not null)
+            if (authorName is not null)
             {
-                data = await _client!.GetBooksByTitleAndAuthorAsync(title, ctx.ParentName, ct: ct);
+                data = await _client!.GetBooksByTitleAndAuthorAsync(title, authorName, ct: ct);
                 _log.Information(
                     "Hardcover book _eq title='{Title}' author='{Author}' → {Count} hit(s) for '{Name}'",
-                    title, ctx.ParentName, data?.Books?.Length ?? 0, ctx.Name);
+                    title, authorName, data?.Books?.Length ?? 0, ctx.Name);
 
                 // Author name didn't match exactly — retry on title alone
                 if (!(data?.Books?.Length > 0))
@@ -536,8 +537,8 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         if (allCandidates.Count == 0)
         {
             var primaryTitle = ctx.PreciseName ?? titles.FirstOrDefault() ?? ctx.Name;
-            var q            = ctx.ParentName is not null
-                               ? $"{primaryTitle} {ctx.ParentName}"
+            var q            = authorName is not null
+                               ? $"{primaryTitle} {authorName}"
                                : primaryTitle;
 
             _log.Information(
@@ -563,6 +564,19 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             .Take(10)
             .ToList();
     }
+
+    /// <summary>
+    /// The author name to use when matching a BOOK. Chronicle's audiobook hierarchy is
+    /// Author(0) -> Series(1) -> Book(2) when a series exists, or Author(0) -> Book(1) when
+    /// it doesn't. `ctx.ParentName` is always the book's IMMEDIATE parent — for a book under
+    /// a series that's the series name, not the author; the author is `ctx.GrandparentName`
+    /// in that case. Using `ctx.ParentName` unconditionally as "the author" was a real,
+    /// confirmed bug: it compared a book's real author against its series name, hard-rejecting
+    /// correct candidates that had real author data while sparse duplicates with no
+    /// contributor data at all skipped the check and won by default.
+    /// </summary>
+    private static string? GetBookAuthorName(MediaSearchContext ctx) =>
+        ctx.HierarchyLevel == 2 ? ctx.GrandparentName : ctx.ParentName;
 
     /// <summary>
     /// Builds a deduplicated ordered list of title strings to try for exact-match book lookup.
@@ -647,8 +661,16 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 { score += 5; reasonList.Add("precise partial"); }
         }
 
-        // Author match against parent context
-        if (ctx.ParentName is not null)
+        // Author match against parent context. For a book under a series (3-level
+        // Author -> Series -> Book hierarchy, HierarchyLevel 2), ctx.ParentName is the
+        // SERIES, not the author — the author is ctx.GrandparentName. Using the wrong
+        // field here was a real, confirmed bug: it made the check compare the book's real
+        // author (e.g. "Dan Simmons") against the series name (e.g. "Hyperion Cantos"),
+        // hard-rejecting the correct, well-populated candidate — while a sparse duplicate
+        // with NO contributor data at all skipped this check entirely (only runs when
+        // authorNames is non-empty) and won by default, purely because it had less data.
+        var bookAuthorName = GetBookAuthorName(ctx);
+        if (bookAuthorName is not null)
         {
             var authorNames = string.Join(" ",
                 (book.Contributions ?? [])
@@ -657,7 +679,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 
             if (!string.IsNullOrEmpty(authorNames))
             {
-                var pn = NormalizeStr(ctx.ParentName);
+                var pn = NormalizeStr(bookAuthorName);
                 var an = NormalizeStr(authorNames);
                 if (an.Contains(pn, StringComparison.Ordinal))
                     { score += 20; reasonList.Add("author exact"); }
@@ -1029,10 +1051,11 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 { score += 5; reasonList.Add("precise partial"); }
         }
 
-        // Author match
-        if (ctx.ParentName is not null && !string.IsNullOrEmpty(authorStr))
+        // Author match — see GetBookAuthorName's doc comment for why this isn't ctx.ParentName.
+        var bookAuthorName = GetBookAuthorName(ctx);
+        if (bookAuthorName is not null && !string.IsNullOrEmpty(authorStr))
         {
-            var pn = NormalizeStr(ctx.ParentName);
+            var pn = NormalizeStr(bookAuthorName);
             var an = NormalizeStr(authorStr);
             if (an.Contains(pn, StringComparison.Ordinal))
                 { score += 20; reasonList.Add("author exact"); }
