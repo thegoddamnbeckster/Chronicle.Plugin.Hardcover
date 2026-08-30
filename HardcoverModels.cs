@@ -210,23 +210,21 @@ internal class HcSeriesStub
 
 internal class HcEdition
 {
-    [JsonPropertyName("audio_seconds")]  public int?           AudioSeconds { get; set; }
-    [JsonPropertyName("narrations")]     public HcNarration[]? Narrations   { get; set; }
+    [JsonPropertyName("audio_seconds")]  public int?     AudioSeconds { get; set; }
     // Many books have no image on the book record itself — Hardcover attaches cover art
     // to editions, and the website assembles a displayed cover from one of those rather
     // than the bare book entity. Queried as a fallback when book-level image is null.
-    [JsonPropertyName("image")]          public HcImage?       Image        { get; set; }
+    [JsonPropertyName("image")]          public HcImage? Image        { get; set; }
 }
 
-internal class HcNarration
-{
-    [JsonPropertyName("narrator")] public HcNarratorStub? Narrator { get; set; }
-}
-
-internal class HcNarratorStub
-{
-    [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
-}
+// Narrators are NOT a separate "narrations" field/type -- confirmed live against Hardcover's
+// current published GraphQL schema (docs/plans/2026-08-28-people-section-design.md Section
+// 4.3/10 flagged this as an open question: the "narrations" field this plugin used to query
+// was removed upstream at some point, per HardcoverClient.cs's own "# narrations removed"
+// comments). Narrator credits live in the SAME generic `contributions` array as authors,
+// distinguished only by `contribution`'s free-text role value (e.g. "Narrator") -- there is no
+// separate narrator entity/type in the schema at all. BuildCast's single contributions loop
+// below already covers them for free; no separate narrator-specific code path is needed.
 
 // ── Slug resolution ───────────────────────────────────────────────────────────
 

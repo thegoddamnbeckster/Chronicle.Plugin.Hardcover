@@ -167,7 +167,28 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         var variants = new List<string>();
         var seen     = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // Audiobook tags routinely record co-authors/pen-name pairs as one comma-joined
+        // string (e.g. "James Hunter, eden Hudson", "Shirtaloon, Travis Deverell" -- a pen
+        // name followed by the author's real name). Searching Hardcover for that whole
+        // string as if it were one person's name finds nothing on the exact-match strategy
+        // and pushes the book-based fallback toward whatever contribution list happens to
+        // contain both substrings, minting a bogus author distinct from the correctly-named
+        // single node that already exists for the same real person. Try the text before the
+        // first comma as its own candidate, ahead of the raw string, so the exact match on
+        // the real primary name gets first crack.
+        var expandedTitles = new List<string>();
         foreach (var title in titles.Where(t => !string.IsNullOrWhiteSpace(t)))
+        {
+            var commaIdx = title.IndexOf(',');
+            if (commaIdx > 0)
+            {
+                var primary = title[..commaIdx].Trim();
+                if (primary.Length > 0) expandedTitles.Add(primary);
+            }
+            expandedTitles.Add(title);
+        }
+
+        foreach (var title in expandedTitles)
         {
             if (seen.Add(title)) variants.Add(title);
 
@@ -893,7 +914,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     private static MediaMetadata BuildBookMetadata(HcBookDetail book)
     {
         var genres      = ExtractGenres(book.CachedTags);
-        var cast        = BuildCast(book.Contributions, book.DefaultEdition?.Narrations);
+        var cast        = BuildCast(book.Contributions);
         var seriesEntry = book.BookSeries?.FirstOrDefault();
         var isbn13      = book.BookMappings?.FirstOrDefault()?.Isbn13;
         var isbn10      = book.BookMappings?.FirstOrDefault()?.Isbn10;
@@ -1156,15 +1177,21 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     private static int GetInt(Dictionary<string, JsonElement> d, string key) =>
         d.TryGetValue(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
 
-    private static List<string> BuildCast(HcContribution[]? contributions, HcNarration[]? narrations)
+    /// <summary>
+    /// Author id was already fetched/parsed into HcAuthorStub.Id and then discarded here
+    /// before this fix (docs/plans/2026-08-28-people-section-design.md Section 4.3) -- now
+    /// threaded through as ExternalPersonId. This single loop over `contributions` also covers
+    /// narrators for free: Hardcover's schema has no separate narrator entity, only the generic
+    /// `contributions` array distinguished by `contribution`'s free-text role value (e.g.
+    /// "Narrator") -- see HcEdition's own doc for how this was confirmed.
+    /// </summary>
+    private static List<CastMember> BuildCast(HcContribution[]? contributions)
     {
-        var list = new List<string>();
+        var list = new List<CastMember>();
         foreach (var c in contributions ?? [])
             if (c.Author is not null)
-                list.Add($"{(c.Contribution ?? "Author")}:{c.Author.Name}");
-        foreach (var n in narrations ?? [])
-            if (n.Narrator is not null)
-                list.Add($"Narrator:{n.Narrator.Name}");
+                list.Add(new CastMember(c.Author.Name, c.Contribution ?? "Author",
+                    ExternalPersonId: $"hardcover:{c.Author.Id}"));
         return list;
     }
 
