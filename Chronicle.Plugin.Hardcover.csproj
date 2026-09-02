@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Chronicle.Plugin.Hardcover</AssemblyName>
     <RootNamespace>Chronicle.Plugin.Hardcover</RootNamespace>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <Description>Chronicle import plugin for Hardcover.app — GraphQL API</Description>
   </PropertyGroup>
 
@@ -22,8 +22,17 @@
   <ItemGroup>
     <PackageReference Include="System.Text.Json" Version="9.0.*" />
     <!-- Serilog is loaded by the Chronicle host — reference without bundling so the
-         plugin uses the same already-loaded instance (same pattern as Chronicle.Plugins). -->
-    <PackageReference Include="Serilog" Version="4.*" PrivateAssets="all" ExcludeAssets="runtime" />
+         plugin uses the same already-loaded instance (same pattern as Chronicle.Plugins).
+         Pinned to the EXACT version Chronicle.API itself resolves (check
+         src/Chronicle.API/obj/project.assets.json), not a floating "4.*" range: a floating
+         range let this plugin's own NuGet restore drift to a newer patch (4.4.0) than what
+         the host process actually has loaded (4.3.1), and .NET's strong-name assembly
+         binding is exact-version-strict: HardcoverClient's constructor started throwing
+         FileNotFoundException ("Could not load ... Serilog, Version=4.4.0.0") the moment a
+         rebuild picked up the newer patch, with no code change and no bad token involved.
+         Confirmed live (2026-09-02): every Hardcover metadata-provider Configure() call
+         failed this way regardless of how valid the API token was. -->
+    <PackageReference Include="Serilog" Version="4.3.1" PrivateAssets="all" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <!-- Copy the plugin manifest alongside the DLL so Chronicle can discover it -->
