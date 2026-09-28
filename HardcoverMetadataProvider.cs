@@ -877,11 +877,25 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     /// <summary>The one canonical HcSeries -> MediaMetadata conversion — see BuildBookMetadata.</summary>
     private static MediaMetadata BuildSeriesMetadata(HcSeries series)
     {
-        var books = (series.BookSeries ?? [])
+        var entries = (series.BookSeries ?? [])
             .Where(e => e.Book is not null && e.Book.Id > 0 && !string.IsNullOrWhiteSpace(e.Book.Title))
             .OrderBy(e => e.Position ?? double.MaxValue)
             .ToList();
-        var posterUrl = books.FirstOrDefault()?.Book?.Image?.Url;
+        var posterUrl = entries.FirstOrDefault()?.Book?.Image?.Url;
+
+        // Root-caused live (2026-09-28): Hardcover's book_series list is one row per EDITION, not
+        // one per logical book -- "Ready Player One" alone had 12 entries all at position 1 (the
+        // English original plus translations into Portuguese, Serbian, Greek, Hebrew, Arabic,
+        // Chinese, Bulgarian, Slovak ...). Creating a stub per entry flooded the series with a
+        // dozen foreign-language duplicates of the same book. Collapsed to ONE representative per
+        // position: the ASCII-titled edition when one exists (the original-language edition for
+        // this English-first library), else the entry with the lowest Hardcover book id (its
+        // oldest/most canonical catalog entry).
+        var books = entries
+            .GroupBy(e => e.Position ?? double.MaxValue)
+            .Select(g => g.OrderByDescending(e => IsAsciiTitle(e.Book!.Title)).ThenBy(e => e.Book!.Id).First())
+            .OrderBy(e => e.Position ?? double.MaxValue)
+            .ToList();
 
         return new MediaMetadata
         {
@@ -891,12 +905,12 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             Overview     = series.Description,
             PosterUrl    = posterUrl,
             ExtendedData = JsonSerializer.SerializeToElement(new { is_completed = series.IsCompleted }),
-            // Every book Hardcover has for this series, in reading order -- Chronicle's own
-            // book-series-sync feature mints/reconciles its own books under this series from this
-            // list, the same way IMovieCollectionService.EnsureCollectionStubsAsync already does
-            // for a movie collection's Results. seriesPosition (a double, so a 4.5 novella keeps
-            // its fractional position) lives in ExtendedData rather than as a new field on the
-            // shared MediaMetadata type, which every OTHER metadata plugin also implements.
+            // One book per position, in reading order -- Chronicle's own book-series-sync feature
+            // mints/reconciles its own books under this series from this list, the same way
+            // IMovieCollectionService.EnsureCollectionStubsAsync already does for a movie
+            // collection's Results. seriesPosition (a double, so a 4.5 novella keeps its
+            // fractional position) lives in ExtendedData rather than as a new field on the shared
+            // MediaMetadata type, which every OTHER metadata plugin also implements.
             Results = books.Select(e => new MediaMetadata
             {
                 ExternalId   = $"hardcover:{e.Book!.Id}",
@@ -908,6 +922,10 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             }).ToList(),
         };
     }
+
+    /// <summary>True when every character is 7-bit ASCII -- used to prefer an original/English
+    /// edition over a translated one when Hardcover lists several editions at the same position.</summary>
+    private static bool IsAsciiTitle(string title) => title.All(c => c <= 127);
 
     private async Task<MediaMetadata> FetchBookAsync(int id, CancellationToken ct)
     {
