@@ -88,7 +88,21 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         // this should have run instead ever to find and displace it with. ChildCount is exactly the
         // "does this already have books under it" signal SearchContext carries for this.
         var isChildlessLevel1 = context.HierarchyLevel == 1 && context.ChildCount is null or 0;
-        if (context.ParentName is not null)
+        // Level 0 (author) can never carry a ParentName -- it has no parent by definition -- so
+        // the ParentName check below can never route a real author to SearchAuthorsInternalAsync
+        // on its own; every level-0 item fell through to the merged search further down instead.
+        // Root-caused live (2026-09-29): Isaac Asimov's own per-item enrichment pass matched a
+        // biography book literally titled "Isaac Asimov" (by Jocelyn Hoppa) over his real author
+        // record, because the merged search has no level-aware preference at all -- confirmed the
+        // same bug also hit Andy Weir, Brandon Sanderson, and Iain Banks (all matched to a book
+        // instead of their author page). IsRealHierarchyPosition is set only by the real per-item
+        // enrichment context (MetadataEnrichmentService), never by a manual/free-text search or a
+        // file-scan candidate search -- code review (2026-09-29) caught an earlier version of this
+        // fix keyed on "ChildNames is non-empty" instead, which still missed a real author with
+        // zero children currently in the library (reproducing the exact same bug on an author's
+        // very first enrichment pass); the explicit flag has no such blind spot.
+        var isKnownAuthor = context.HierarchyLevel == 0 && context.IsRealHierarchyPosition;
+        if (context.ParentName is not null || isKnownAuthor)
         {
             return context.HierarchyLevel switch
             {
