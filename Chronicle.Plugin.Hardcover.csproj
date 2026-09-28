@@ -35,6 +35,13 @@
     <PackageReference Include="Serilog" Version="4.3.1" PrivateAssets="all" ExcludeAssets="runtime" />
   </ItemGroup>
 
+  <!-- The test project lives inside this repo; keep its sources out of the plugin assembly, and let
+       it reach the internal HardcoverRateLimiter/HardcoverClient. -->
+  <ItemGroup>
+    <Compile Remove="tests/**" />
+    <InternalsVisibleTo Include="Chronicle.Plugin.Hardcover.Tests" />
+  </ItemGroup>
+
   <!-- Copy the plugin manifest alongside the DLL so Chronicle can discover it -->
   <ItemGroup>
     <None Update="manifest.json">

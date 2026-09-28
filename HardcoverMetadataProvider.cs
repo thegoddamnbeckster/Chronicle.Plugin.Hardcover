@@ -58,9 +58,19 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         ],
     };
 
+    private static string? _lastToken;
+
     public void Configure(IReadOnlyDictionary<string, string> settings)
     {
         settings.TryGetValue(KeyApiToken, out var token);
+        // Configure runs on every settings save: only a genuinely DIFFERENT token clears the
+        // limiter's block, so a routine reconfigure can't reopen the tap during a daily-quota lockout.
+        var tokenKey = token?.Trim() ?? string.Empty;
+        if (!string.Equals(tokenKey, _lastToken, StringComparison.Ordinal))
+        {
+            if (_lastToken is not null) HardcoverRateLimiter.Shared.Reset();
+            _lastToken = tokenKey;
+        }
         _client?.Dispose();
         _client = string.IsNullOrWhiteSpace(token) ? null : new HardcoverClient(token.Trim());
     }
@@ -118,6 +128,9 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         static async Task<IReadOnlyList<ScoredCandidate>> Safe(Task<IReadOnlyList<ScoredCandidate>> t)
         {
             try { return await t; }
+            // A 429 is not "this search found nothing" -- rethrow it so the caller can tell a
+            // rate-limited provider (pause, leave the item alone) from a genuine empty result.
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.TooManyRequests) { throw; }
             catch { return []; }
         }
 
@@ -869,7 +882,10 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     {
         var data   = await _client!.GetSeriesByIdAsync(id, ct);
         var series = data?.Series?.FirstOrDefault()
-            ?? throw new InvalidOperationException($"Hardcover series {id} not found.");
+            // KeyNotFoundException (not InvalidOperationException): the host's series sweep deletes a stored
+            // series id only for a malformed/unknown id, and must not confuse "not found" with an auth or
+            // throttle failure, which the client raises as InvalidOperationException.
+            ?? throw new KeyNotFoundException($"Hardcover series {id} not found.");
         return BuildSeriesMetadata(series);
     }
 
@@ -889,7 +905,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     }
 
     /// <summary>The one canonical HcSeries -> MediaMetadata conversion — see BuildBookMetadata.</summary>
-    private static MediaMetadata BuildSeriesMetadata(HcSeries series)
+    internal static MediaMetadata BuildSeriesMetadata(HcSeries series)
     {
         var entries = (series.BookSeries ?? [])
             .Where(e => e.Book is not null && e.Book.Id > 0 && !string.IsNullOrWhiteSpace(e.Book.Title))
@@ -905,10 +921,23 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         // position: the ASCII-titled edition when one exists (the original-language edition for
         // this English-first library), else the entry with the lowest Hardcover book id (its
         // oldest/most canonical catalog entry).
+        // The OTHER entries collapsed into each representative are kept as alternateIds: a library
+        // item Chronicle already matched to a different edition of the same book (root-caused live
+        // 2026-09-28: Dungeon Crawler Carl #1 was real item hardcover:2333832 while the collapsed
+        // representative was hardcover:446681) must still be recognized as THAT book, or the sync
+        // mints a duplicate stub beside it.
         var books = entries
-            .GroupBy(e => e.Position ?? double.MaxValue)
-            .Select(g => g.OrderByDescending(e => IsAsciiTitle(e.Book!.Title)).ThenBy(e => e.Book!.Id).First())
-            .OrderBy(e => e.Position ?? double.MaxValue)
+            // Entries with NO position are unrelated books (companion novels, omnibuses), not
+            // editions of one -- each is its own group so none is advertised as another's alternate.
+            .GroupBy(e => e.Position.HasValue ? $"p{e.Position.Value:R}" : $"id{e.Book!.Id}")
+            .Select(g =>
+            {
+                var rep = g.OrderByDescending(e => IsAsciiTitle(e.Book!.Title)).ThenBy(e => e.Book!.Id).First();
+                var alternates = g.Where(e => e.Book!.Id != rep.Book!.Id)
+                    .Select(e => $"hardcover:{e.Book!.Id}").Distinct().ToList();
+                return (Rep: rep, Alternates: alternates);
+            })
+            .OrderBy(t => t.Rep.Position ?? double.MaxValue)
             .ToList();
 
         return new MediaMetadata
@@ -925,14 +954,15 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             // collection's Results. seriesPosition (a double, so a 4.5 novella keeps its
             // fractional position) lives in ExtendedData rather than as a new field on the shared
             // MediaMetadata type, which every OTHER metadata plugin also implements.
-            Results = books.Select(e => new MediaMetadata
+            Results = books.Select(t => new MediaMetadata
             {
-                ExternalId   = $"hardcover:{e.Book!.Id}",
+                ExternalId   = $"hardcover:{t.Rep.Book!.Id}",
                 Source       = "hardcover",
-                Title        = e.Book.Title,
-                Year         = e.Book.ReleaseYear,
-                PosterUrl    = e.Book.Image?.Url,
-                ExtendedData = JsonSerializer.SerializeToElement(new { seriesPosition = e.Position }),
+                Title        = t.Rep.Book.Title,
+                Year         = t.Rep.Book.ReleaseYear,
+                PosterUrl    = t.Rep.Book.Image?.Url,
+                ExtendedData = JsonSerializer.SerializeToElement(
+                    new { seriesPosition = t.Rep.Position, alternateIds = t.Alternates }),
             }).ToList(),
         };
     }

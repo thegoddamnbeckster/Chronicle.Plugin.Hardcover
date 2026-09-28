@@ -9,7 +9,7 @@ namespace Chronicle.Plugin.Hardcover;
 /// <summary>
 /// Thin HTTP wrapper around the Hardcover GraphQL endpoint.
 /// Handles Bearer-token authentication, 429 rate-limit back-off, and proactive
-/// rate limiting (Hardcover allows 60 requests/minute = 1 req/sec).
+/// rate limiting kept at ~90% of Hardcover's published limits (see "Rate limiting" below).
 ///
 /// Hardcover returns 403 for BOTH invalid tokens AND rate limiting, so the client
 /// treats 403 as a retryable error with exponential backoff — only surfacing a
@@ -19,17 +19,8 @@ internal sealed class HardcoverClient : IDisposable
 {
     private const string GraphQlUrl = "https://api.hardcover.app/v1/graphql";
 
-    /// <summary>
-    /// Minimum milliseconds between successive requests to stay within Hardcover's
-    /// 60 req/min rate limit. Applied globally across all concurrent callers via a
-    /// static semaphore + timestamp.
-    /// </summary>
-    private const int MinRequestIntervalMs = 250;    // 4 req/s — Hardcover's effective limit is higher; 1100ms was too conservative and caused Add Media searches to time out
-
-    // Static gate shared across all HardcoverClient instances in this process so that
-    // even multiple concurrent enrichment tasks respect the single rate limit.
-    private static readonly SemaphoreSlim   _rateSem  = new(1, 1);
-    private static          long            _lastTick  = 0;          // Environment.TickCount64
+    // Rate limiting lives in HardcoverRateLimiter (one shared instance: one token, one quota).
+    private readonly HardcoverRateLimiter Limiter;
 
     private static readonly ILogger _log = Log.ForContext<HardcoverClient>();
 
@@ -41,8 +32,12 @@ internal sealed class HardcoverClient : IDisposable
         PropertyNameCaseInsensitive = true,
     };
 
-    public HardcoverClient(string apiToken)
+    public HardcoverClient(string apiToken) : this(apiToken, null, null) { }
+
+    /// <summary>Test seam: a fake HTTP handler and limiter. Production always uses the shared limiter.</summary>
+    internal HardcoverClient(string apiToken, HttpMessageHandler? handler, HardcoverRateLimiter? limiter)
     {
+        Limiter = limiter ?? HardcoverRateLimiter.Shared;
         // The Hardcover API page shows the full "Bearer eyJ..." header value.
         // Accept either the raw JWT or the full "Bearer {jwt}" string.
         var jwt = apiToken.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
@@ -53,7 +48,7 @@ internal sealed class HardcoverClient : IDisposable
             ? jwt[..12] + "…"
             : string.IsNullOrWhiteSpace(jwt) ? "(empty)" : "(short:" + jwt.Length + "chars)";
 
-        _http = new HttpClient();
+        _http = handler is null ? new HttpClient() : new HttpClient(handler);
         _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {jwt}");
         _http.DefaultRequestHeaders.Add(
             "User-Agent", "Chronicle/1.0 (https://github.com/thegoddamnbeckster/Chronicle)");
@@ -62,30 +57,6 @@ internal sealed class HardcoverClient : IDisposable
         _log.Information("HardcoverClient created — token prefix: {Prefix}", _tokenPreview);
     }
 
-    /// <summary>
-    /// Acquires the global rate-limit gate, waits if the last request was less than
-    /// <see cref="MinRequestIntervalMs"/> ago, then updates the timestamp.
-    /// </summary>
-    private static async Task ThrottleAsync(CancellationToken ct)
-    {
-        await _rateSem.WaitAsync(ct);
-        try
-        {
-            var now  = Environment.TickCount64;
-            var wait = (int)(MinRequestIntervalMs - (now - _lastTick));
-            if (wait > 0)
-                await Task.Delay(wait, ct);
-            _lastTick = Environment.TickCount64;
-        }
-        finally
-        {
-            _rateSem.Release();
-        }
-    }
-
-    // ── Public API ────────────────────────────────────────────────────────────
-
-    /// <summary>Fetches the current user's identity — used to verify the token.</summary>
     public Task<MeData?> GetMeAsync(CancellationToken ct = default) =>
         QueryAsync<MeData>(
             "query Me { me { id username } }", ct: ct);
@@ -366,18 +337,46 @@ internal sealed class HardcoverClient : IDisposable
 
         for (int attempt = 0; attempt < 3; attempt++)
         {
-            await ThrottleAsync(ct);
+            await Limiter.AcquireAsync(ct);
 
             _log.Debug("Hardcover request attempt {Attempt}/3 token={Token}", attempt + 1, _tokenPreview);
 
             using var resp = await _http.PostAsJsonAsync(GraphQlUrl, body, ct);
 
+            if (resp.Headers.TryGetValues("RateLimit", out var rlValues)) Limiter.Observe(rlValues);
+
             if (resp.StatusCode == HttpStatusCode.TooManyRequests)
             {
-                var retryAfter = resp.Headers.RetryAfter?.Delta ?? retryDelays[Math.Min(attempt, retryDelays.Length - 1)];
-                _log.Warning("Hardcover 429 TooManyRequests — waiting {Secs}s before retry (attempt {Attempt}/3)",
-                    retryAfter.TotalSeconds, attempt + 1);
-                await Task.Delay(retryAfter, ct);
+                // Retry-After is either delta-seconds or an HTTP date; honour both.
+                TimeSpan retryAfter;
+                if (resp.Headers.RetryAfter?.Delta is { } delta) retryAfter = delta;
+                else if (resp.Headers.RetryAfter?.Date is { } at) retryAfter = at - DateTimeOffset.UtcNow;
+                else retryAfter = retryDelays[Math.Min(attempt, retryDelays.Length - 1)];
+                if (retryAfter < TimeSpan.Zero) retryAfter = TimeSpan.Zero;
+
+                // A long Retry-After is the daily cap (resets 00:00 UTC), not the per-minute bucket:
+                // waiting it out inline just pins the caller until its own timeout, and every other
+                // queued caller would do the same. Open the breaker and fail fast -- the host treats
+                // a 429 HttpRequestException as "provider unavailable, stop this pass, leave items
+                // Pending" (MetadataEnrichmentService), so nothing is marked failed or exhausted.
+                // The same applies if the RateLimit header on this very response already opened it.
+                if (retryAfter > HardcoverRateLimiter.MaxInlineWait || Limiter.IsBlocked)
+                {
+                    if (retryAfter > HardcoverRateLimiter.MaxInlineWait)
+                        Limiter.OpenBreaker(retryAfter + TimeSpan.FromSeconds(5),
+                            $"Hardcover answered 429 with Retry-After {retryAfter.TotalSeconds:F0}s (daily quota)");
+                    throw new HttpRequestException(
+                        $"Hardcover API quota exhausted; retry after {retryAfter.TotalSeconds:F0}s.",
+                        null, HttpStatusCode.TooManyRequests);
+                }
+
+                // Out of attempts: give up now rather than sleeping first and throwing after.
+                if (attempt == 2) break;
+
+                _log.Warning("Hardcover 429 TooManyRequests -- pausing all Hardcover calls {Secs}s (attempt {Attempt}/3)",
+                    retryAfter.TotalSeconds + 1, attempt + 1);
+                // The pause is shared: every caller waits it out inside AcquireAsync, not just this one.
+                Limiter.NoteThrottled(retryAfter + TimeSpan.FromSeconds(1));
                 continue;
             }
 
@@ -398,10 +397,14 @@ internal sealed class HardcoverClient : IDisposable
                 if (attempt < 2)
                 {
                     _log.Warning("Backing off {Secs}s before retry", retryDelays[attempt].TotalSeconds);
-                    await Task.Delay(retryDelays[attempt], ct);
+                    await Limiter.DelayAsync(retryDelays[attempt], ct);
                     continue;
                 }
 
+                // Every later call would burn the same ~90s of retries and fail the same way: fail them
+                // fast for a while instead. Cleared automatically when the API token is changed.
+                Limiter.OpenBreaker(TimeSpan.FromMinutes(10),
+                    $"HTTP {(int)resp.StatusCode} persisted across 3 attempts (token invalid/expired or missing scope)");
                 throw new InvalidOperationException(
                     $"Hardcover API returned {(int)resp.StatusCode} after 3 attempts — " +
                     $"token prefix: {_tokenPreview} — response: {(string.IsNullOrWhiteSpace(responseBody) ? "(empty)" : responseBody)}. " +
@@ -422,7 +425,11 @@ internal sealed class HardcoverClient : IDisposable
             return result!.Data;
         }
 
-        throw new InvalidOperationException("Hardcover API rate limit exceeded after retries.");
+        // Three per-minute 429s in a row: back off for a minute so concurrent callers don't keep
+        // stampeding the same bucket, and report it as a 429 so the host pauses instead of failing items.
+        Limiter.OpenBreaker(TimeSpan.FromMinutes(1), "still rate-limited after 3 attempts");
+        throw new HttpRequestException(
+            "Hardcover API rate limit exceeded after retries.", null, HttpStatusCode.TooManyRequests);
     }
 
     public void Dispose() => _http.Dispose();
