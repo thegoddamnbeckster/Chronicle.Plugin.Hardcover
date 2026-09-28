@@ -4,3 +4,6 @@ obj/
 .vs/
 *.suo
 .DS_Store
+
+# Build output -- never committed, only used locally to stage a deploy
+publish/
