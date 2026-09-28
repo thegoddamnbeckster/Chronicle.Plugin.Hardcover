@@ -77,13 +77,23 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             : (IReadOnlyList<string>)[context.Name];
 
         // When enriching a known item, route to the correct level.
-        // When ParentName is set, the hierarchy context is unambiguous.
+        // When ParentName is set, the hierarchy context is unambiguous -- EXCEPT that level 1 in
+        // Chronicle's Author->Series->Book audiobook hierarchy is overloaded: SyncOrchestrationService
+        // puts a book with no series there too (bookLevel = 1 when the sync event carries no series
+        // name), so a level-1 item is only a real series when it actually HAS books grouped under it.
+        // Root-caused live (2026-09-27/28): "Black Phoenix" (a standalone B.V. Larson novel, no series,
+        // ChildCount 0) was always routed to SearchSeriesInternalAsync purely because of its level, which
+        // found an unrelated same-named series by a different author (Lynn Kerstan) and kept re-attaching
+        // it on every enrichment pass, since there IS no real "Black Phoenix" series for the book search
+        // this should have run instead ever to find and displace it with. ChildCount is exactly the
+        // "does this already have books under it" signal SearchContext carries for this.
+        var isChildlessLevel1 = context.HierarchyLevel == 1 && context.ChildCount is null or 0;
         if (context.ParentName is not null)
         {
             return context.HierarchyLevel switch
             {
                 0 => await SearchAuthorsInternalAsync(context, titles, ct),
-                1 => await SearchSeriesInternalAsync(context, titles, ct),
+                1 when !isChildlessLevel1 => await SearchSeriesInternalAsync(context, titles, ct),
                 _ => await SearchBooksInternalAsync(context, titles, ct),
             };
         }
