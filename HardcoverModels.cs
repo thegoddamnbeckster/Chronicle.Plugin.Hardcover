@@ -148,6 +148,7 @@ internal class HcBookStub
 {
     [JsonPropertyName("id")]            public int              Id            { get; set; }
     [JsonPropertyName("title")]         public string           Title         { get; set; } = string.Empty;
+    [JsonPropertyName("release_year")]  public int?             ReleaseYear   { get; set; }
     [JsonPropertyName("image")]         public HcImage?         Image         { get; set; }
     /// <summary>Author contributions — populated when the query requests them.</summary>
     [JsonPropertyName("contributions")] public HcContribution[]? Contributions { get; set; }

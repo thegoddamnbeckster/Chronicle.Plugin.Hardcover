@@ -877,7 +877,12 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     /// <summary>The one canonical HcSeries -> MediaMetadata conversion — see BuildBookMetadata.</summary>
     private static MediaMetadata BuildSeriesMetadata(HcSeries series)
     {
-        var posterUrl = series.BookSeries?.FirstOrDefault()?.Book?.Image?.Url;
+        var books = (series.BookSeries ?? [])
+            .Where(e => e.Book is not null && e.Book.Id > 0 && !string.IsNullOrWhiteSpace(e.Book.Title))
+            .OrderBy(e => e.Position ?? double.MaxValue)
+            .ToList();
+        var posterUrl = books.FirstOrDefault()?.Book?.Image?.Url;
+
         return new MediaMetadata
         {
             ExternalId   = $"hardcover:series:{series.Id}",
@@ -886,6 +891,21 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             Overview     = series.Description,
             PosterUrl    = posterUrl,
             ExtendedData = JsonSerializer.SerializeToElement(new { is_completed = series.IsCompleted }),
+            // Every book Hardcover has for this series, in reading order -- Chronicle's own
+            // book-series-sync feature mints/reconciles its own books under this series from this
+            // list, the same way IMovieCollectionService.EnsureCollectionStubsAsync already does
+            // for a movie collection's Results. seriesPosition (a double, so a 4.5 novella keeps
+            // its fractional position) lives in ExtendedData rather than as a new field on the
+            // shared MediaMetadata type, which every OTHER metadata plugin also implements.
+            Results = books.Select(e => new MediaMetadata
+            {
+                ExternalId   = $"hardcover:{e.Book!.Id}",
+                Source       = "hardcover",
+                Title        = e.Book.Title,
+                Year         = e.Book.ReleaseYear,
+                PosterUrl    = e.Book.Image?.Url,
+                ExtendedData = JsonSerializer.SerializeToElement(new { seriesPosition = e.Position }),
+            }).ToList(),
         };
     }
 

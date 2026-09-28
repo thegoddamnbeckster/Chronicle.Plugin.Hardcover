@@ -221,13 +221,22 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { name, n = limit }, ct);
 
+    /// <summary>
+    /// Full series detail, INCLUDING every book Hardcover has for it (not limit:1 like the
+    /// scoring-only queries above) -- this is the one call site both series-candidate scoring
+    /// (which only ever reads the first entry) and the series-stub-sync feature (which needs
+    /// every book's position, id, title, image and release year to mint/reconcile the whole
+    /// series) share, matching the two-step "resolve then fetch full detail once" pattern the
+    /// book slug resolution above already uses rather than a second, drifting query.
+    /// </summary>
     public Task<SeriesData?> GetSeriesByIdAsync(int id, CancellationToken ct = default) =>
         QueryAsync<SeriesData>("""
             query GetSeries($id: Int!) {
               series(where: { id: { _eq: $id } }) {
                 id name description slug is_completed
-                book_series(order_by: { position: asc }, limit: 1) {
-                  book { id title image { url } }
+                book_series(order_by: { position: asc }) {
+                  position
+                  book { id title release_year image { url } }
                 }
               }
             }
