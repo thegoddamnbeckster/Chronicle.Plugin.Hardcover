@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -10,13 +10,11 @@
     <Description>Chronicle import plugin for Hardcover.app — GraphQL API</Description>
   </PropertyGroup>
 
-  <!-- Reference Chronicle.Plugins from the main repo (not bundled at runtime) -->
+  <!-- Chronicle.Plugins.dll is provided by the host at runtime: do NOT copy it to the output. A project reference (not a
+       HintPath to a built DLL) so this plugin is rebuilt whenever the plugin API changes; with a HintPath, MSBuild thinks
+       an old build is up to date and the stale plugin fails at run time with "Method not found". -->
   <ItemGroup>
-    <Reference Include="Chronicle.Plugins">
-      <HintPath>..\Chronicle\src\Chronicle.Plugins\bin\Debug\net9.0\Chronicle.Plugins.dll</HintPath>
-      <Private>false</Private>
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </Reference>
+    <ProjectReference Include="..\Chronicle\src\Chronicle.Plugins\Chronicle.Plugins.csproj" Private="false" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
