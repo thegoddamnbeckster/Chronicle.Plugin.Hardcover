@@ -135,6 +135,10 @@ internal class HcSeries
     [JsonPropertyName("description")]  public string? Description  { get; set; }
     [JsonPropertyName("slug")]         public string? Slug         { get; set; }
     [JsonPropertyName("is_completed")] public bool?   IsCompleted  { get; set; }
+    [JsonPropertyName("books_count")]  public int?    BooksCount   { get; set; }
+    [JsonPropertyName("primary_books_count")] public int? PrimaryBooksCount { get; set; }
+    /// <summary>The series' own author (Hardcover records one on the series, not only on its books).</summary>
+    [JsonPropertyName("author")]       public HcAuthorName? Author { get; set; }
     [JsonPropertyName("book_series")]  public HcBookSeriesEntry[]? BookSeries { get; set; }
 }
 
@@ -167,6 +171,7 @@ internal class HcBookDetail
     [JsonPropertyName("id")]               public int               Id            { get; set; }
     [JsonPropertyName("title")]            public string            Title         { get; set; } = string.Empty;
     [JsonPropertyName("subtitle")]         public string?           Subtitle      { get; set; }
+    [JsonPropertyName("slug")]             public string?           Slug          { get; set; }
     [JsonPropertyName("description")]      public string?           Description   { get; set; }
     [JsonPropertyName("release_year")]     public int?              ReleaseYear   { get; set; }
     [JsonPropertyName("pages")]            public int?              Pages         { get; set; }
@@ -239,4 +244,9 @@ internal class SlugLookupData<T>
 internal class HcIdOnly
 {
     [JsonPropertyName("id")] public int Id { get; set; }
+}
+
+internal class HcAuthorName
+{
+    [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
 }

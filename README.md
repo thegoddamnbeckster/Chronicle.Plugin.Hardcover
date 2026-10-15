@@ -43,6 +43,24 @@ Fix Match accepts full Hardcover URLs:
 - **Delta sync** — only fetches activity since the last sync using `updated_at` timestamps
 - **Series hierarchy** — books with a series are grouped under the series as a parent item
 
+### How a book is found (1.4.0)
+
+Hardcover's own search returns nothing, so books are found by direct lookups, cheapest first, stopping at the first strong match:
+
+1. the exact title (with the author, then without), then the title in Title Case;
+2. the book's slug, **plain and with its year** (the plain `blood-world` is Chris Mooney's; B.V. Larson's is `blood-world-2017`);
+3. a **title range restricted to the author**, which finds `Mind Hack: A Cyberpunk Saga` for `Mind Hack`;
+4. **through the book's series**: the Hardcover series of that name lists its books under their full titles;
+5. a title range on its own (a range, never `_ilike`: Hardcover has disabled `_ilike` before, and a refused operator opens this client's breaker for ten minutes).
+
+What the library calls a book is cleaned first: a `(2023)` in the name is a year, a file-scan leftover (`- - (2014) - Dust World`) is a title and a year, `(Unabridged)` and `[Dramatized Adaptation]` are dropped, and a trailing series position is ignored on either side (`Blood World: Undying Mercenaries, Book 8`, `Rebel Fleet #4`).
+
+Scoring: title exact 60, or the same title with a subtitle or series on one side 55 (`Mind Hack` / `Mind Hack: A Cyberpunk Saga`; never `Kiki` / `Kiki's Delivery Service`); year exact +20; **the library's series is one of the book's series +25**; author exact +20, with initials compared spaced or not (`B.V. Larson` is `B. V. Larson`). **A different author refuses the book unless its series agrees**: a shared universe (Four Horsemen, Birthright, Order of the Centurion) credits one author in the library and the real writers in Hardcover.
+
+Series are found the same way (exact name, slug, the name-and-author slug Hardcover uses when the plain one is taken, names that begin with ours), ignoring `Series`, `Saga`, `Universe`, `#3` and volume ranges (`Hunger - 1-3`). Hardcover keeps empty entries beside real series (`Undying Mercenaries #8` with no books), so an entry with books is preferred, and **a series whose author differs is confirmed by the books the library already holds under it**.
+
+Measured on 42 library items the older matcher had left not found, the live service gave a match for 35. After updating, press Reset on the Not Found tab of Hardcover's enrichment page to try them again.
+
 ---
 
 ## Setup

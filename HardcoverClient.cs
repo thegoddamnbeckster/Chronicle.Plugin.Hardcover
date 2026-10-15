@@ -180,8 +180,9 @@ internal sealed class HardcoverClient : IDisposable
     public Task<SeriesData?> GetSeriesByNameExactAsync(string name, int limit = 10, CancellationToken ct = default) =>
         QueryAsync<SeriesData>("""
             query GetSeriesByNameExact($name: String!, $n: Int!) {
-              series(where: { name: { _eq: $name } }, limit: $n) {
-                id name description slug is_completed
+              series(where: { name: { _eq: $name } }, limit: $n, order_by: { primary_books_count: desc_nulls_last }) {
+                id name description slug is_completed books_count primary_books_count
+                author { name }
                 book_series(order_by: { position: asc }, limit: 1) {
                   book {
                     id title image { url }
@@ -204,7 +205,8 @@ internal sealed class HardcoverClient : IDisposable
         QueryAsync<SeriesData>("""
             query GetSeries($id: Int!) {
               series(where: { id: { _eq: $id } }) {
-                id name description slug is_completed
+                id name description slug is_completed books_count primary_books_count
+                author { name }
                 book_series(order_by: { position: asc }) {
                   position
                   book { id title release_year image { url } }
@@ -226,7 +228,7 @@ internal sealed class HardcoverClient : IDisposable
                 title: { _eq: $title },
                 contributions: { author: { name: { _eq: $author } } }
               }, limit: $n) {
-                id title subtitle description release_year pages rating ratings_count
+                id title subtitle slug description release_year pages rating ratings_count
                 cached_tags
                 image { url }
                 contributions { author { id name } contribution }
@@ -250,7 +252,7 @@ internal sealed class HardcoverClient : IDisposable
         QueryAsync<BookDetailData>("""
             query GetBooksByTitleExact($title: String!, $n: Int!) {
               books(where: { title: { _eq: $title } }, limit: $n) {
-                id title subtitle description release_year pages rating ratings_count
+                id title subtitle slug description release_year pages rating ratings_count
                 cached_tags
                 image { url }
                 contributions { author { id name } contribution }
@@ -264,11 +266,71 @@ internal sealed class HardcoverClient : IDisposable
             }
             """, new { title, n = limit }, ct);
 
+    /// <summary>
+    /// Books whose title lies in a range, the standard way to find "Mind Hack: A Cyberpunk Saga" for "Mind Hack" (an exact lookup never
+    /// can). A RANGE (<c>_gte</c> / <c>_lt</c>), not <c>_ilike</c>: Hardcover has disabled <c>_ilike</c> before, and a refused operator
+    /// is answered with a 403 that this client treats as a bad token and answers by opening its breaker for ten minutes. A range is
+    /// case-sensitive, so callers try the title's usual casings. With <paramref name="author"/> the books are restricted to that
+    /// author's, which keeps a short title from returning thousands of neighbours.
+    /// </summary>
+    public Task<BookDetailData?> GetBooksByTitleRangeAsync(string low, string high, string? author, int limit = 25, CancellationToken ct = default) =>
+        author is null
+            ? QueryAsync<BookDetailData>("""
+                query GetBooksByTitleRange($low: String!, $high: String!, $n: Int!) {
+                  books(where: { title: { _gte: $low, _lt: $high } }, limit: $n, order_by: { ratings_count: desc_nulls_last }) {
+                    id title subtitle slug description release_year pages rating ratings_count
+                    cached_tags
+                    image { url }
+                    contributions { author { id name } contribution }
+                    book_series { position series { id name } }
+                    default_physical_edition {
+                      audio_seconds
+                      image { url }
+                    }
+                  }
+                }
+                """, new { low, high, n = limit }, ct)
+            : QueryAsync<BookDetailData>("""
+                query GetBooksByTitleRangeAndAuthor($low: String!, $high: String!, $author: String!, $n: Int!) {
+                  books(where: {
+                    title: { _gte: $low, _lt: $high },
+                    contributions: { author: { name: { _eq: $author } } }
+                  }, limit: $n, order_by: { ratings_count: desc_nulls_last }) {
+                    id title subtitle slug description release_year pages rating ratings_count
+                    cached_tags
+                    image { url }
+                    contributions { author { id name } contribution }
+                    book_series { position series { id name } }
+                    default_physical_edition {
+                      audio_seconds
+                      image { url }
+                    }
+                  }
+                }
+                """, new { low, high, author, n = limit }, ct);
+
+    /// <summary>Series whose name begins with the given text (a range, see <see cref="GetBooksByTitleRangeAsync"/>), the ones with the most books first.</summary>
+    public Task<SeriesData?> GetSeriesByNameRangeAsync(string low, string high, int limit = 15, CancellationToken ct = default) =>
+        QueryAsync<SeriesData>("""
+            query GetSeriesByNameRange($low: String!, $high: String!, $n: Int!) {
+              series(where: { name: { _gte: $low, _lt: $high } }, limit: $n, order_by: { primary_books_count: desc_nulls_last }) {
+                id name description slug is_completed books_count primary_books_count
+                author { name }
+                book_series(order_by: { position: asc }, limit: 1) {
+                  book {
+                    id title image { url }
+                    contributions(limit: 3) { author { name } }
+                  }
+                }
+              }
+            }
+            """, new { low, high, n = limit }, ct);
+
     public Task<BookDetailData?> GetBookByIdAsync(int id, CancellationToken ct = default) =>
         QueryAsync<BookDetailData>("""
             query GetBook($id: Int!) {
               books(where: { id: { _eq: $id } }) {
-                id title subtitle description release_year pages rating ratings_count
+                id title subtitle slug description release_year pages rating ratings_count
                 cached_tags
                 image { url }
                 contributions { author { id name } contribution }

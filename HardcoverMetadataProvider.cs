@@ -10,13 +10,24 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
 {
     public string PluginId => "hardcover";
     public string Name     => "Hardcover";
-    public string Version  => "1.1.0";
+    public string Version  => "1.4.0";
     public string Author   => "Michael Beck";
 
     private static readonly ILogger _log = Log.ForContext<HardcoverMetadataProvider>();
 
     private const string KeyApiToken = "api_token";   // shared with HardcoverImportProvider
     private HardcoverClient? _client;
+
+    /// <summary>A score at or above this is a match nothing further needs to be fetched to confirm (title, year and author all agree).</summary>
+    private const int StrongScore = 80;
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, (DateTime At, HcSeries Series)> _seriesCache = new();
+    private static readonly TimeSpan SeriesCacheFor = TimeSpan.FromMinutes(10);
+
+    public HardcoverMetadataProvider() { }
+
+    /// <summary>For tests: a client over a fake HTTP handler.</summary>
+    internal HardcoverMetadataProvider(HardcoverClient client) => _client = client;
 
     public MediaTypeSupport[] GetSupportedMediaTypes() =>
     [
@@ -312,67 +323,74 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
     private async Task<IReadOnlyList<ScoredCandidate>> SearchSeriesInternalAsync(
         MediaSearchContext ctx, IReadOnlyList<string> titles, CancellationToken ct)
     {
-        // search(query_type:"Series") returns 0 for all queries — same issue as author
-        // and book search endpoints. Use _eq table lookup as the primary strategy.
+        // search(query_type:"Series") returns 0 for all queries — same issue as author and book search endpoints. Direct table
+        // lookups are used, and (new) ALL of them contribute to one pool instead of the first one that finds anything deciding:
+        // Hardcover holds many same-named series by different authors, empty "Name #3" entries, and "Name Series" twins.
+        var names  = Matching.SeriesNames([ctx.PreciseName, .. titles, ctx.Name]);
+        var author = ctx.ParentName;
+        var pool   = new Dictionary<int, HcSeries>();
 
-        var nameVariants = BuildSeriesNameVariants(titles);
-
-        // ── Strategy 1: direct _eq table lookup ──────────────────────────────
-        foreach (var name in nameVariants)
+        void Add(IEnumerable<HcSeries>? found)
         {
-            var data   = await _client!.GetSeriesByNameExactAsync(name, ct: ct);
-            var series = data?.Series ?? [];
+            foreach (var s in found ?? []) if (s.Id > 0) pool.TryAdd(s.Id, s);
+        }
+        int Best() => pool.Count == 0 ? 0 : pool.Values.Max(s => ScoreSeries(ctx, s).Candidate.Score);
 
-            _log.Information(
-                "Hardcover series _eq '{Name}' → {Count} hit(s) for '{Query}'",
-                name, series.Length, ctx.Name);
-
-            if (series.Length == 0) continue;
-
-            var candidates = series
-                .Select(s => ScoreSeriesCandidateDirect(ctx, s))
-                .Where(c => c.Score > 0)
-                .OrderByDescending(c => c.Score)
-                .Take(10)
-                .ToList();
-
-            if (candidates.Count > 0) return candidates;
+        // ── Strategy 1: direct _eq on each name variant ──────────────────────
+        foreach (var name in names.Take(3))
+        {
+            var data = await _client!.GetSeriesByNameExactAsync(name, ct: ct);
+            _log.Information("Hardcover series _eq '{Name}' → {Count} hit(s) for '{Query}'", name, data?.Series?.Length ?? 0, ctx.Name);
+            Add(data?.Series);
+            if (Best() >= StrongScore) break;
         }
 
-        // ── Strategy 2: slug-based lookup ────────────────────────────────────
-        // Converts names to Hardcover's slug format (lowercase-hyphenated), bypassing
-        // case sensitivity and punctuation differences entirely.
-        // "Echoes From the Moon" → "echoes-from-the-moon" → exact slug match.
-        var slugVariants = BuildSlugVariants(titles.Concat([ctx.Name]).ToList());
-
-        foreach (var slug in slugVariants)
+        // ── Strategy 2: slugs, including the name-and-author slug Hardcover uses when the plain one is taken ──
+        if (Best() < StrongScore)
         {
-            // Same resolution ResolveHardcoverUrlAsync (Fix Match) uses — see
-            // ResolveSeriesSlugAsync's doc comment for why this must not be reimplemented
-            // as a one-shot combined query.
-            var resolved = await ResolveSeriesSlugAsync(slug, ct);
-            var series   = resolved is null ? [] : new[] { resolved };
-
-            _log.Information(
-                "Hardcover series slug '{Slug}' → {Result} for '{Name}'",
-                slug, resolved is null ? "no match" : $"id={resolved.Id}", ctx.Name);
-
-            if (series.Length == 0) continue;
-
-            var candidates = series
-                .Select(s => ScoreSeriesCandidateDirect(ctx, s))
-                .Where(c => c.Score > 0)
-                .OrderByDescending(c => c.Score)
-                .Take(10)
-                .ToList();
-
-            if (candidates.Count > 0) return candidates;
+            foreach (var slug in Matching.SeriesSlugs(names.Take(2), author).Take(4))
+            {
+                var resolved = await ResolveSeriesSlugAsync(slug, ct);
+                _log.Information("Hardcover series slug '{Slug}' → {Result} for '{Name}'", slug, resolved is null ? "no match" : $"id={resolved.Id}", ctx.Name);
+                if (resolved is not null) Add([resolved]);
+                if (Best() >= StrongScore) break;
+            }
         }
 
-        // ── Strategy 3: search-endpoint fallback (returns 0 today, kept for resilience) ──
-        _log.Information(
-            "Hardcover series slug found nothing for '{Name}' — trying search endpoint fallback",
-            ctx.Name);
+        // ── Strategy 3: names that begin with ours ("Imperium - Mech" is Hardcover's "Imperium: Mech") ──
+        if (Best() < StrongScore)
+        {
+            foreach (var name in names.Take(2))
+            {
+                var (low, high) = Matching.PrefixRange(name);
+                var data = await _client!.GetSeriesByNameRangeAsync(low, high, ct: ct);
+                _log.Information("Hardcover series range '{Name}' → {Count} hit(s) for '{Query}'", name, data?.Series?.Length ?? 0, ctx.Name);
+                Add(data?.Series);
+                if (Best() >= StrongScore) break;
+            }
+        }
+
+        // Score. A series whose author differs is not refused outright: a shared universe credits one author in the library and the
+        // real writers in Hardcover (Four Horsemen, Birthright), so the books the library already holds settle it.
+        var scored = new List<ScoredCandidate>();
+        foreach (var series in pool.Values)
+        {
+            var (candidate, authorDiffers) = ScoreSeries(ctx, series);
+            if (!authorDiffers) { if (candidate.Score > 0) scored.Add(candidate); continue; }
+
+            var overlap = await ChildOverlapAsync(ctx, series.Id, ct);
+            if (overlap >= 0.34)
+            {
+                var score = Math.Max(0, candidate.Score + 10 + (int)(40 * overlap));   // undo the 'author differs' penalty and add the confirmation
+                scored.Add(new ScoredCandidate(candidate.Metadata, score, candidate.ScoreReason + $", the library's books are {overlap:P0} of it"));
+            }
+        }
+
+        if (scored.Count > 0)
+            return scored.OrderByDescending(c => c.Score).Take(10).ToList();
+
+        // ── Strategy 4: search-endpoint fallback (returns 0 today, kept for resilience) ──
+        _log.Information("Hardcover series lookups found nothing for '{Name}' — trying search endpoint fallback", ctx.Name);
 
         foreach (var title in titles.Where(t => IsUsableTitle(t)))
         {
@@ -380,10 +398,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             var data  = await _client!.SearchSeriesAsync(clean, ct: ct);
             var hits  = ParseSearchResults(data?.Search?.Results ?? default);
 
-            _log.Information(
-                "Hardcover series search '{Query}' → {Count} hit(s) for '{Name}'",
-                clean, hits.Count, ctx.Name);
-
+            _log.Information("Hardcover series search '{Query}' → {Count} hit(s) for '{Name}'", clean, hits.Count, ctx.Name);
             if (hits.Count == 0) continue;
 
             var candidates = hits
@@ -399,119 +414,130 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         return [];
     }
 
-    private static List<string> BuildSeriesNameVariants(IReadOnlyList<string> titles)
+    /// <summary>A series' full detail (every book), remembered ten minutes: confirming a series by its books and finding a book through its series both need it.</summary>
+    private async Task<HcSeries?> SeriesDetailAsync(int id, CancellationToken ct)
     {
-        var variants = new List<string>();
-        var seen     = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_seriesCache.TryGetValue(id, out var hit) && DateTime.UtcNow - hit.At < SeriesCacheFor) return hit.Series;
+        var data = await _client!.GetSeriesByIdAsync(id, ct);
+        var series = data?.Series?.FirstOrDefault();
+        if (series is null) return null;
+        if (_seriesCache.Count > 500) _seriesCache.Clear();
+        _seriesCache[id] = (DateTime.UtcNow, series);
+        return series;
+    }
 
-        void Add(string? s)
-        {
-            if (!IsUsableTitle(s)) return;
-            var clean = StripAudiobookArtifacts(s!);
-            if (!IsUsableTitle(clean)) return;
-            if (seen.Add(clean)) variants.Add(clean);
-
-            // Title-cased fallback (handles sources that preserve wrong casing)
-            var tc = System.Globalization.CultureInfo.InvariantCulture.TextInfo
-                     .ToTitleCase(clean.ToLowerInvariant());
-            if (!string.Equals(tc, clean, StringComparison.Ordinal) && seen.Add(tc))
-                variants.Add(tc);
-        }
-
-        foreach (var title in titles) Add(title);
-        return variants;
+    /// <summary>The share of the library's books under a series that are books of this Hardcover series (a title, or the title with a subtitle).</summary>
+    private async Task<double> ChildOverlapAsync(MediaSearchContext ctx, int seriesId, CancellationToken ct)
+    {
+        var children = ctx.ChildNames?.Where(n => !string.IsNullOrWhiteSpace(n)).ToList() ?? [];
+        if (children.Count == 0) return 0;
+        var detail = await SeriesDetailAsync(seriesId, ct);
+        var titles = detail?.BookSeries?.Select(b => b.Book?.Title).Where(t => !string.IsNullOrEmpty(t)).Select(t => t!).ToList() ?? [];
+        if (titles.Count == 0) return 0;
+        var matched = children.Count(c => titles.Any(t => Matching.Relate(c, t) >= Matching.TitleMatch.Prefix));
+        return (double)matched / children.Count;
     }
 
     /// <summary>
-    /// Generates deduplicated Hardcover slugs to try for slug-based lookups.
-    /// Slugs bypass case sensitivity and punctuation differences.
+    /// Scores a series from a direct table query, and says whether its author differs from the library's (the caller then confirms it by
+    /// the books the library holds instead of refusing it). The series' own author is read as well as the first book's.
     /// </summary>
-    private static List<string> BuildSlugVariants(IReadOnlyList<string> names)
-    {
-        var seen  = new HashSet<string>(StringComparer.Ordinal);
-        var slugs = new List<string>();
-
-        foreach (var name in names.Where(n => IsUsableTitle(n)))
-        {
-            var stripped = StripAudiobookArtifacts(name);
-            foreach (var candidate in new[] { name, stripped })
-            {
-                if (!IsUsableTitle(candidate)) continue;
-                var slug = ToHardcoverSlug(candidate);
-                if (slug.Length >= 3 && seen.Add(slug))
-                    slugs.Add(slug);
-            }
-        }
-        return slugs;
-    }
-
-    /// <summary>Scores an <see cref="HcSeries"/> from the direct Hasura table query.</summary>
-    private static ScoredCandidate ScoreSeriesCandidateDirect(
-        MediaSearchContext ctx, HcSeries series)
+    private static (ScoredCandidate Candidate, bool AuthorDiffers) ScoreSeries(MediaSearchContext ctx, HcSeries series)
     {
         if (series.Id <= 0)
-            return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
+            return (new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id"), false);
 
-        var firstBook = series.BookSeries?.FirstOrDefault()?.Book;
         var meta = BuildSeriesMetadata(series);
+        var rel  = Matching.RelateSeries(ctx.Name, series.Name);
+        if (rel == Matching.TitleMatch.None && ctx.PreciseName is not null) rel = Matching.RelateSeries(ctx.PreciseName, series.Name);
+        if (rel == Matching.TitleMatch.None)
+            return (new ScoredCandidate(meta, 0, "no name match"), false);
 
-        var (score, reasons) = ScoreTitle(ctx, series.Name);
-        var reasonList = new List<string> { reasons };
+        var score = rel switch { Matching.TitleMatch.Exact => 60, Matching.TitleMatch.Prefix => 55, _ => 30 };
+        var reasons = new List<string> { $"series name {rel.ToString().ToLowerInvariant()}" };
 
-        // Author match — use the first book's contributions to identify the series author.
-        // A match boosts confidence; a clear mismatch penalises so a same-named series by
-        // a different author doesn't tie with the correct one.
-        if (ctx.ParentName is not null && firstBook?.Contributions is { Length: > 0 })
+        var authors = new List<string>();
+        if (!string.IsNullOrWhiteSpace(series.Author?.Name)) authors.Add(series.Author!.Name);
+        authors.AddRange(series.BookSeries?.FirstOrDefault()?.Book?.Contributions?
+            .Where(c => c.Author is not null).Select(c => c.Author!.Name) ?? []);
+
+        var differs = false;
+        switch (Matching.RelateAuthor(ctx.ParentName, authors))
         {
-            var authorNames = string.Join(" ", firstBook.Contributions
-                .Where(c => c.Author is not null)
-                .Select(c => c.Author!.Name));
-
-            var pn = NormalizeStr(ctx.ParentName);
-            var an = NormalizeStr(authorNames);
-
-            if (an.Contains(pn, StringComparison.Ordinal))
-                { score += 20; reasonList.Add("author exact"); }
-            else if (an.Split(' ').Any(w => w.Length >= 3 && pn.Contains(w, StringComparison.Ordinal)))
-                { score += 10; reasonList.Add("author partial"); }
-            else
-                // Hard reject: author context present, book's author clearly doesn't match.
-                return new ScoredCandidate(meta, 0, "author mismatch — hard reject");
+            case Matching.AuthorMatch.Exact:   score += 20; reasons.Add("author exact"); break;
+            case Matching.AuthorMatch.Partial: score += 10; reasons.Add("author partial"); break;
+            case Matching.AuthorMatch.Different: differs = true; score -= 10; reasons.Add("author differs"); break;
         }
 
-        return new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasonList));
+        // Hardcover keeps empty entries ("Undying Mercenaries #8" with no books) beside the real series.
+        var books = Math.Max(series.PrimaryBooksCount ?? 0, series.BooksCount ?? 0);
+        if (books == 0) { score -= 25; reasons.Add("no books"); }
+        else if (books >= 3) { score += 5; reasons.Add("has books"); }
+        if (Regex.IsMatch(series.Name, @"#\s*\d+\s*$") && !Regex.IsMatch(ctx.Name, @"#\s*\d+\s*$")) { score -= 10; reasons.Add("numbered entry"); }
+
+        return (new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasons)), differs);
+    }
+
+    /// <summary>What a library book is looked up as: its titles (clean, without a series tail), the year it states, its author and its series.</summary>
+    private sealed record BookQuery(IReadOnlyList<string> Titles, int? Year, string? Author, string? Series);
+
+    private static BookQuery BuildBookQuery(MediaSearchContext ctx, IReadOnlyList<string> titles)
+    {
+        var sources = new List<string?>();
+        if (ctx.PreciseName is not null) sources.Add(ctx.PreciseName);
+        sources.AddRange(titles);
+        sources.Add(ctx.Name);
+        if (!string.Equals(ctx.FilenameStem, ctx.Name, StringComparison.OrdinalIgnoreCase)) sources.Add(ctx.FilenameStem);
+
+        // A "(2023)" in the name, or a file-scan "- - (2014) - Title" leftover, is a year, not part of the title.
+        var year = ctx.Year ?? sources.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => Matching.Parse(x).Year).FirstOrDefault(y => y.HasValue);
+        var series = ctx.HierarchyLevel == 2 ? ctx.ParentName : null;
+        return new BookQuery(Matching.BookTitles(sources), year, GetBookAuthorName(ctx), series);
+    }
+
+    /// <summary>The titles with a Title Case twin for each (sources that store lowercase titles, and Hardcover's lookup being case-sensitive).</summary>
+    private static List<string> WithCaseVariants(IEnumerable<string> titles)
+    {
+        var list = new List<string>();
+        foreach (var t in titles)
+        {
+            if (!list.Contains(t, StringComparer.Ordinal)) list.Add(t);
+            var tc = System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(t.ToLowerInvariant());
+            if (!string.Equals(tc, t, StringComparison.Ordinal) && !list.Contains(tc, StringComparer.Ordinal)) list.Add(tc);
+        }
+        return list;
     }
 
     private async Task<IReadOnlyList<ScoredCandidate>> SearchBooksInternalAsync(
         MediaSearchContext ctx, IReadOnlyList<string> titles, CancellationToken ct)
     {
-        // Hardcover's search(query_type:"book") endpoint returns 0 results for all queries
-        // (confirmed: even "The Martian", "Ilium", etc. return 0 hits).
-        // Use direct _eq table lookup as the primary strategy; the search endpoint is kept
-        // as a fallback in case Hardcover restores it on their end.
-        //
-        // _eq is case-sensitive, so we try multiple title variants per query.
-        // Results carry full book detail (year, contributions, series) so scoring is rich.
+        // Hardcover's search(query_type:"book") endpoint returns 0 results for all queries, so books are found by direct table lookups,
+        // cheapest first, stopping as soon as a candidate is strong enough (title, year and author all agree):
+        //   1. an exact title (with the author, then without)        2. the book's slug, plain and with its year
+        //   3. a title range restricted to the author (finds "Mind Hack: A Cyberpunk Saga" for "Mind Hack")
+        //   4. through the book's series                             5. a title range on its own
+        // Every candidate goes through the same scoring (ScoreBook), so a wider net can only find a better candidate for the same
+        // title, never accept a wrong book.
 
+        var query         = BuildBookQuery(ctx, titles);
         var allCandidates = new List<ScoredCandidate>();
         var seenIds       = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        void Merge(IEnumerable<ScoredCandidate> incoming)
+        void Take(IEnumerable<HcBookDetail> books)
         {
-            foreach (var c in incoming)
-                if (c.Metadata.ExternalId is not null && seenIds.Add(c.Metadata.ExternalId))
-                    allCandidates.Add(c);
+            foreach (var b in books)
+            {
+                var c = ScoreBook(query, ctx, b);
+                if (c.Score > 0 && c.Metadata.ExternalId is not null && seenIds.Add(c.Metadata.ExternalId)) allCandidates.Add(c);
+            }
         }
+        int Best() => allCandidates.Count == 0 ? 0 : allCandidates.Max(c => c.Score);
 
-        var titleVariants = BuildBookTitleVariants(ctx, titles);
-        var useYear       = ctx.Year.HasValue;
+        var titleVariants = WithCaseVariants(query.Titles);
+        var authorName    = query.Author;
 
         // ── Strategy 1: direct _eq table lookup ──────────────────────────────
-        // When the author is known, include it in the filter — this prevents false
-        // positives on common titles and makes the match authoritative.
-        // Fall through to title-only if the author name doesn't match exactly
-        // (e.g. casing differences between Chronicle's stored name and Hardcover's).
-        var authorName = GetBookAuthorName(ctx);
+        // With the author when it is known (it keeps common titles apart); on the title alone if that finds nothing.
         foreach (var title in titleVariants)
         {
             BookDetailData? data;
@@ -519,99 +545,87 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             if (authorName is not null)
             {
                 data = await _client!.GetBooksByTitleAndAuthorAsync(title, authorName, ct: ct);
-                _log.Information(
-                    "Hardcover book _eq title='{Title}' author='{Author}' → {Count} hit(s) for '{Name}'",
+                _log.Information("Hardcover book _eq title='{Title}' author='{Author}' → {Count} hit(s) for '{Name}'",
                     title, authorName, data?.Books?.Length ?? 0, ctx.Name);
 
-                // Author name didn't match exactly — retry on title alone
                 if (!(data?.Books?.Length > 0))
                 {
                     data = await _client!.GetBooksByTitleExactAsync(title, ct: ct);
-                    _log.Information(
-                        "Hardcover book _eq title='{Title}' (author-fallback) → {Count} hit(s) for '{Name}'",
+                    _log.Information("Hardcover book _eq title='{Title}' (author-fallback) → {Count} hit(s) for '{Name}'",
                         title, data?.Books?.Length ?? 0, ctx.Name);
                 }
             }
             else
             {
                 data = await _client!.GetBooksByTitleExactAsync(title, ct: ct);
-                _log.Information(
-                    "Hardcover book _eq title='{Title}' → {Count} hit(s) for '{Name}'",
-                    title, data?.Books?.Length ?? 0, ctx.Name);
+                _log.Information("Hardcover book _eq title='{Title}' → {Count} hit(s) for '{Name}'", title, data?.Books?.Length ?? 0, ctx.Name);
             }
 
-            var books = data?.Books ?? [];
-            if (books.Length == 0) continue;
-
-            var scored = books
-                .Select(b => ScoreBookCandidateDirect(ctx, b, useYear))
-                .Where(c => c.Score > 0)
-                .ToList();
-
-            Merge(scored);
-
-            // NOTE: deliberately no early-exit here even once a candidate clears the
-            // acceptance threshold. Hardcover's title index can return a different (often
-            // sparser, orphaned/duplicate) book row than the one its slug resolves to for
-            // the exact same title — short-circuiting here meant Strategy 2 (slug) never
-            // ran once Strategy 1 found anything "good enough", so a stale duplicate with
-            // no cover art could win purely because it was the first result, without the
-            // better-populated candidate ever entering the pool to compete on the
-            // data-completeness tiebreaker below.
+            Take(data?.Books ?? []);
+            // NOTE: no early exit on a merely acceptable candidate. Hardcover's title index can return a sparser duplicate row than
+            // the one its slug resolves to for the same title, so the slug strategy below always runs unless a candidate is strong.
+            if (Best() >= StrongScore) break;
         }
 
-        // ── Strategy 2: slug-based lookup ────────────────────────────────────
-        // Bypasses case sensitivity and punctuation. "Project Hail Mary (Unabridged)"
-        // strips to "Project Hail Mary" → slug "project-hail-mary" → exact match.
-        // Always attempted (not just when Strategy 1 found nothing) — see note above.
-        // Every candidate still goes through the same ScoreBookCandidateDirect scoring
-        // and author hard-reject, so widening the pool here can only ever help pick a
-        // better-populated match for the same title/author, never accept a wrong book.
+        // ── Strategy 2: slugs ────────────────────────────────────────────────
+        // Plain and with the year: the plain slug often belongs to another book ("blood-world" is by Chris Mooney, B.V. Larson's is
+        // "blood-world-2017"). The same two-step resolution Fix Match uses (see ResolveBookSlugAsync).
+        if (Best() < StrongScore)
         {
-            var allTitles  = new List<string> { ctx.Name };
-            if (ctx.PreciseName is not null) allTitles.Insert(0, ctx.PreciseName);
-            allTitles.AddRange(titles);
-            var slugVariants = BuildSlugVariants(allTitles);
-
-            foreach (var slug in slugVariants)
+            var slugTitles = query.Titles.Concat(query.Titles.Select(Matching.MainTitle).Where(m => m is not null).Select(m => m!)).Distinct(StringComparer.OrdinalIgnoreCase);
+            foreach (var slug in Matching.BookSlugs(slugTitles, query.Year).Take(6))
             {
-                // Same resolution ResolveHardcoverUrlAsync (Fix Match) uses — see
-                // ResolveBookSlugAsync's doc comment for why this must not be reimplemented
-                // as a one-shot combined query.
                 var book = await ResolveBookSlugAsync(slug, ct);
-
-                _log.Information(
-                    "Hardcover book slug '{Slug}' → {Result} for '{Name}'",
-                    slug, book is null ? "no match" : $"id={book.Id}", ctx.Name);
-
+                _log.Information("Hardcover book slug '{Slug}' → {Result} for '{Name}'", slug, book is null ? "no match" : $"id={book.Id}", ctx.Name);
                 if (book is null) continue;
-
-                var scored = ScoreBookCandidateDirect(ctx, book, useYear);
-                if (scored.Score > 0) Merge([scored]);
+                Take([book]);
+                if (Best() >= StrongScore) break;
             }
         }
 
-        // ── Strategy 3: search-endpoint fallback (returns 0 today, kept for resilience) ──
+        // ── Strategy 3: titles that begin with ours, by this author ──────────
+        if (Best() < StrongScore && authorName is not null)
+        {
+            foreach (var title in titleVariants.Take(3))
+            {
+                var (low, high) = Matching.PrefixRange(title);
+                var data = await _client!.GetBooksByTitleRangeAsync(low, high, authorName, ct: ct);
+                _log.Information("Hardcover book range '{Title}' author='{Author}' → {Count} hit(s) for '{Name}'", title, authorName, data?.Books?.Length ?? 0, ctx.Name);
+                Take(data?.Books ?? []);
+                if (Best() >= StrongScore) break;
+            }
+        }
+
+        // ── Strategy 4: through the book's series ────────────────────────────
+        // The library's series lists the book; Hardcover's series lists its books under their full titles.
+        if (Best() < StrongScore && query.Series is not null)
+            Take(await BooksViaSeriesAsync(query, ctx, ct));
+
+        // ── Strategy 5: titles that begin with ours, any author ──────────────
+        // Last, because a short title returns many neighbours; the most-rated come first and scoring discards the unrelated.
+        if (Best() < StrongScore && titleVariants.Count > 0)
+        {
+            var (low, high) = Matching.PrefixRange(titleVariants[0]);
+            var data = await _client!.GetBooksByTitleRangeAsync(low, high, null, limit: 50, ct: ct);
+            _log.Information("Hardcover book range '{Title}' → {Count} hit(s) for '{Name}'", titleVariants[0], data?.Books?.Length ?? 0, ctx.Name);
+            Take(data?.Books ?? []);
+        }
+
+        // ── Strategy 6: search-endpoint fallback (returns 0 today, kept for resilience) ──
         if (allCandidates.Count == 0)
         {
             var primaryTitle = ctx.PreciseName ?? titles.FirstOrDefault() ?? ctx.Name;
-            var q            = authorName is not null
-                               ? $"{primaryTitle} {authorName}"
-                               : primaryTitle;
+            var q            = authorName is not null ? $"{primaryTitle} {authorName}" : primaryTitle;
 
-            _log.Information(
-                "Hardcover book _eq found nothing for '{Name}' — trying search endpoint fallback '{Query}'",
-                ctx.Name, q);
+            _log.Information("Hardcover book lookups found nothing for '{Name}' — trying search endpoint fallback '{Query}'", ctx.Name, q);
 
             var searchData = await _client!.SearchBooksAsync(q, ct: ct);
             var hits       = ParseSearchResults(searchData?.Search?.Results ?? default);
-
-            _log.Information(
-                "Hardcover book search '{Query}' → {Count} hit(s) for '{Name}'",
-                q, hits.Count, ctx.Name);
+            _log.Information("Hardcover book search '{Query}' → {Count} hit(s) for '{Name}'", q, hits.Count, ctx.Name);
 
             if (hits.Count > 0)
-                Merge(hits.Select(h => ScoreBookCandidate(ctx, h, useYear)).Where(c => c.Score > 0));
+                foreach (var c in hits.Select(h => ScoreBookCandidate(ctx, h, ctx.Year.HasValue)).Where(c => c.Score > 0))
+                    if (c.Metadata.ExternalId is not null && seenIds.Add(c.Metadata.ExternalId)) allCandidates.Add(c);
         }
 
         return allCandidates
@@ -621,6 +635,44 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             .ThenByDescending(c => GetRatingsCount(c.Metadata))
             .Take(10)
             .ToList();
+    }
+
+    /// <summary>
+    /// Books found through the library's series: the Hardcover series of that name (the one by this author, or with the most books),
+    /// then the books of it whose title is, or begins with, the library's. At most three are fetched in full. The series detail is
+    /// remembered, so the other books of the same series cost nothing extra to look up.
+    /// </summary>
+    private async Task<List<HcBookDetail>> BooksViaSeriesAsync(BookQuery query, MediaSearchContext ctx, CancellationToken ct)
+    {
+        var found = new List<HcBookDetail>();
+        HcSeries? best = null;
+        foreach (var name in Matching.SeriesNames([query.Series]).Take(2))
+        {
+            var data = await _client!.GetSeriesByNameExactAsync(name, ct: ct);
+            var ranked = (data?.Series ?? [])
+                .Where(s => s.Id > 0 && Matching.RelateSeries(query.Series!, s.Name) >= Matching.TitleMatch.Prefix)
+                .OrderByDescending(s => Matching.RelateAuthor(query.Author, [s.Author?.Name ?? ""]) == Matching.AuthorMatch.Exact ? 1 : 0)
+                .ThenByDescending(s => Math.Max(s.PrimaryBooksCount ?? 0, s.BooksCount ?? 0))
+                .ToList();
+            if (ranked.Count > 0) { best = ranked[0]; break; }
+        }
+        if (best is null) return found;
+
+        var detail = await SeriesDetailAsync(best.Id, ct);
+        var wanted = (detail?.BookSeries ?? [])
+            .Where(b => b.Book is { Id: > 0 } && query.Titles.Any(t => Matching.Relate(t, b.Book!.Title) >= Matching.TitleMatch.Prefix))
+            .Select(b => b.Book!.Id)
+            .Distinct()
+            .Take(3)
+            .ToList();
+        _log.Information("Hardcover book via series '{Series}' (id {Id}) → {Count} candidate(s) for '{Name}'", best.Name, best.Id, wanted.Count, ctx.Name);
+
+        foreach (var id in wanted)
+        {
+            var data = await _client!.GetBookByIdAsync(id, ct);
+            if (data?.Books?.FirstOrDefault() is { } book) found.Add(book);
+        }
+        return found;
     }
 
     /// <summary>
@@ -637,51 +689,23 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
         ctx.HierarchyLevel == 2 ? ctx.GrandparentName : ctx.ParentName;
 
     /// <summary>
-    /// Builds a deduplicated ordered list of title strings to try for exact-match book lookup.
-    /// PreciseName (short title) goes first; AltTitles follow; FilenameStem is appended last.
-    /// A title-cased variant is added for each entry to handle lowercase source data.
+    /// Scores an <see cref="HcBookDetail"/> from a direct table query against what the library says the book is.
+    ///
+    ///   title    exact 60; the same title with a subtitle or series on one side ("Mind Hack" / "Mind Hack: A Cyberpunk Saga") 55;
+    ///            one inside the other 30; otherwise the book is refused
+    ///   year     exact +20, one off +10, different -10 (the year can come from a "(2023)" in the name)
+    ///   series   the library's series is one of the book's series: +25
+    ///   author   exact +20, partial +10; a DIFFERENT author refuses the book unless its series agrees (a shared universe credits one
+    ///            author in the library and the real writers in Hardcover: Four Horsemen, Birthright, Order of the Centurion), -10
+    ///   tie-breaks  cover art +5, ratings +2; an entry whose slug ends in a uuid (a duplicate row) -8
     /// </summary>
-    private static List<string> BuildBookTitleVariants(MediaSearchContext ctx, IReadOnlyList<string> titles)
-    {
-        var variants = new List<string>();
-        var seen     = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        void Add(string? s)
-        {
-            if (!IsUsableTitle(s)) return;
-            var clean = StripAudiobookArtifacts(s!);
-            if (!IsUsableTitle(clean)) return;
-            if (seen.Add(clean)) variants.Add(clean);
-            // Title-cased fallback for sources that store lowercase titles
-            var tc = System.Globalization.CultureInfo.InvariantCulture.TextInfo
-                     .ToTitleCase(clean.ToLowerInvariant());
-            if (!string.Equals(tc, clean, StringComparison.Ordinal) && seen.Add(tc))
-                variants.Add(tc);
-        }
-
-        Add(ctx.PreciseName);
-        foreach (var t in titles) Add(t);
-        if (!string.Equals(ctx.FilenameStem, ctx.Name, StringComparison.OrdinalIgnoreCase))
-            Add(ctx.FilenameStem);
-
-        return variants;
-    }
-
-    /// <summary>
-    /// Scores an <see cref="HcBookDetail"/> returned by the direct Hasura table query.
-    /// Mirrors the logic of <see cref="ScoreBookCandidate"/> but works with strongly-typed
-    /// objects rather than the raw JSON dictionaries from the search endpoint.
-    /// </summary>
-    private static ScoredCandidate ScoreBookCandidateDirect(
-        MediaSearchContext ctx, HcBookDetail book, bool useYear)
+    private static ScoredCandidate ScoreBook(BookQuery query, MediaSearchContext ctx, HcBookDetail book)
     {
         if (book.Id <= 0)
             return new ScoredCandidate(new MediaMetadata { Source = "hardcover" }, 0, "no id");
 
-        // The book record itself often has no image — Hardcover attaches cover art to
-        // editions, and the website assembles a displayed cover from one of those rather
-        // than the bare book entity. Fall back to the default physical edition's image
-        // when the book-level one is absent.
+        // The book record itself often has no image — Hardcover attaches cover art to editions, and the website assembles a displayed
+        // cover from one of those. Fall back to the default physical edition's image when the book-level one is absent.
         var posterUrl = book.Image?.Url ?? book.DefaultEdition?.Image?.Url;
 
         var meta = new MediaMetadata
@@ -692,25 +716,24 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
             Year         = book.ReleaseYear,
             PosterUrl    = posterUrl,
             Rating       = book.Rating,
-            ExtendedData = JsonSerializer.SerializeToElement(
-                               new { ratings_count = book.RatingsCount ?? 0 }),
+            ExtendedData = JsonSerializer.SerializeToElement(new { ratings_count = book.RatingsCount ?? 0 }),
         };
 
-        var (score, reasons) = ScoreTitle(ctx, book.Title);
-        var reasonList = new List<string> { reasons };
+        var relation = query.Titles.Select(t => Matching.Relate(t, book.Title)).DefaultIfEmpty(Matching.TitleMatch.None).Max();
+        if (relation == Matching.TitleMatch.None)
+            return new ScoredCandidate(meta, 0, "no title match");
 
-        // Year signals
-        if (useYear && ctx.Year.HasValue && meta.Year.HasValue)
+        var score = relation switch { Matching.TitleMatch.Exact => 60, Matching.TitleMatch.Prefix => 55, _ => 30 };
+        var reasonList = new List<string> { $"title {relation.ToString().ToLowerInvariant()}" };
+
+        if (query.Year.HasValue && meta.Year.HasValue)
         {
-            if (ctx.Year == meta.Year)
-                { score += 20; reasonList.Add("year exact"); }
-            else if (Math.Abs(ctx.Year.Value - meta.Year.Value) == 1)
-                { score += 10; reasonList.Add("year ±1"); }
-            else
-                { score -= 10; reasonList.Add("year mismatch"); }
+            var diff = Math.Abs(query.Year.Value - meta.Year.Value);
+            if (diff == 0)      { score += 20; reasonList.Add("year exact"); }
+            else if (diff == 1) { score += 10; reasonList.Add("year ±1"); }
+            else                { score -= 10; reasonList.Add("year mismatch"); }
         }
 
-        // PreciseName bonus
         if (ctx.PreciseName is not null)
         {
             if (string.Equals(ctx.PreciseName, book.Title, StringComparison.OrdinalIgnoreCase))
@@ -719,46 +742,33 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider
                 { score += 5; reasonList.Add("precise partial"); }
         }
 
-        // Author match against parent context. For a book under a series (3-level
-        // Author -> Series -> Book hierarchy, HierarchyLevel 2), ctx.ParentName is the
-        // SERIES, not the author — the author is ctx.GrandparentName. Using the wrong
-        // field here was a real, confirmed bug: it made the check compare the book's real
-        // author (e.g. "Dan Simmons") against the series name (e.g. "Hyperion Cantos"),
-        // hard-rejecting the correct, well-populated candidate — while a sparse duplicate
-        // with NO contributor data at all skipped this check entirely (only runs when
-        // authorNames is non-empty) and won by default, purely because it had less data.
-        var bookAuthorName = GetBookAuthorName(ctx);
-        if (bookAuthorName is not null)
+        // The library's series is one of this book's series.
+        var seriesAgrees = false;
+        if (query.Series is not null && book.BookSeries is { Length: > 0 })
         {
-            var authorNames = string.Join(" ",
-                (book.Contributions ?? [])
-                    .Where(c => c.Author is not null)
-                    .Select(c => c.Author!.Name));
-
-            if (!string.IsNullOrEmpty(authorNames))
-            {
-                var pn = NormalizeStr(bookAuthorName);
-                var an = NormalizeStr(authorNames);
-                if (an.Contains(pn, StringComparison.Ordinal))
-                    { score += 20; reasonList.Add("author exact"); }
-                else if (an.Split(' ').Any(w => w.Length >= 3 && pn.Contains(w, StringComparison.Ordinal)))
-                    { score += 10; reasonList.Add("author partial"); }
-                else
-                    // Hard reject: we have the author in context AND the book's author clearly
-                    // doesn't match. No title or year signal can overcome a wrong author.
-                    return new ScoredCandidate(meta, 0, "author mismatch — hard reject");
-            }
+            seriesAgrees = book.BookSeries.Any(bs => bs.Series is not null && Matching.RelateSeries(query.Series, bs.Series.Name) >= Matching.TitleMatch.Prefix);
+            if (seriesAgrees) { score += 25; reasonList.Add("series agrees"); }
         }
 
-        // Data-completeness tiebreaker. Hardcover can have multiple book rows for what is
-        // really the same title/edition (duplicate community entries, sparse stubs) — without
-        // this, a well-curated candidate with cover art can lose a tie to an empty duplicate
-        // purely on result order. Kept small relative to title/year/author signals (max ~60+)
-        // so it only ever breaks near-ties, never overrides a genuinely better match.
-        if (!string.IsNullOrEmpty(posterUrl))
-            { score += 5; reasonList.Add("has cover art"); }
-        if ((book.RatingsCount ?? 0) > 0)
-            { score += 2; reasonList.Add("has ratings"); }
+        // Author. For a book under a series ctx.ParentName is the SERIES and the author is ctx.GrandparentName (GetBookAuthorName).
+        var authors = (book.Contributions ?? []).Where(c => c.Author is not null).Select(c => c.Author!.Name);
+        switch (Matching.RelateAuthor(query.Author, authors))
+        {
+            case Matching.AuthorMatch.Exact:   score += 20; reasonList.Add("author exact"); break;
+            case Matching.AuthorMatch.Partial: score += 10; reasonList.Add("author partial"); break;
+            case Matching.AuthorMatch.Different when seriesAgrees:
+                score -= 10; reasonList.Add("author differs, series agrees"); break;
+            case Matching.AuthorMatch.Different:
+                // We have the author AND the book's author clearly is not it, and nothing else vouches for the book.
+                return new ScoredCandidate(meta, 0, "author mismatch — hard reject");
+        }
+
+        // Data-completeness tie-breakers. Hardcover can hold several rows for what is really one book (duplicate community entries,
+        // sparse stubs); these only ever break near-ties.
+        if (!string.IsNullOrEmpty(posterUrl))            { score += 5; reasonList.Add("has cover art"); }
+        if ((book.RatingsCount ?? 0) > 0)                { score += 2; reasonList.Add("has ratings"); }
+        if (book.Slug is { } slug && Regex.IsMatch(slug, @"-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
+                                                         { score -= 8; reasonList.Add("duplicate entry"); }
 
         return new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasonList));
     }
