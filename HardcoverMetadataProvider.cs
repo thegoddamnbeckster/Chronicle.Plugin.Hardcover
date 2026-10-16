@@ -6,9 +6,13 @@ using System.Text.RegularExpressions;
 
 namespace Chronicle.Plugin.Hardcover;
 
-public sealed class HardcoverMetadataProvider : IMetadataProvider
+public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPolicyProvider
 {
     public string PluginId => "hardcover";
+
+    /// <summary>A series id is "hardcover:series:{id}". Chronicle keeps the book list of every series matched to one in step with
+    /// Hardcover's after this plugin's metadata fetch.</summary>
+    public ExternalIdPolicy GetExternalIdPolicy() => new() { Source = "hardcover", SeriesIdMarker = "series:" };
     public string Name     => "Hardcover";
     public string Version  => "1.4.0";
     public string Author   => "Michael Beck";
