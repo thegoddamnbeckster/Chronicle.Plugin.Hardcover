@@ -156,11 +156,7 @@ public sealed class HardcoverImportProvider : IImportProvider
         var result = new List<ImportedRating>();
         foreach (var ub in books)
         {
-            if (ub.Book is null || !ub.Rating.HasValue) continue;
-
-            // Hardcover 0.5–5 → Chronicle 1–10 (multiply by 2, round, clamp)
-            var chronicleRating = (int)Math.Round(ub.Rating.Value * 2, MidpointRounding.AwayFromZero);
-            chronicleRating = Math.Clamp(chronicleRating, 1, 10);
+            if (ub.Book is null || ToChronicleRating(ub.Rating) is not { } chronicleRating) continue;
 
             var ratedAt = ParseDate(ub.UpdatedAt) ?? DateTimeOffset.UtcNow;
 
@@ -178,6 +174,17 @@ public sealed class HardcoverImportProvider : IImportProvider
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Hardcover's 0.5-5 stars as Chronicle's 1-10 (twice the stars, rounded). Null for "not rated": a missing rating, and a
+    /// zero, which is how an unrated shelf entry can arrive. It used to be clamped up to 1, so every unrated book on the shelves
+    /// became a book rated 1 out of 10 (over a hundred of them, most never read).
+    /// </summary>
+    internal static int? ToChronicleRating(double? stars)
+    {
+        if (stars is not { } value || value < 0.25) return null;
+        return Math.Clamp((int)Math.Round(value * 2, MidpointRounding.AwayFromZero), 1, 10);
     }
 
     // ── Import — watchlist ────────────────────────────────────────────────────
