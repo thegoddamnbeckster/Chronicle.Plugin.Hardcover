@@ -14,6 +14,10 @@ internal sealed class FakeHardcover : HttpMessageHandler
     public sealed record B(int Id, string Title, int? Year, string Slug, string[] Authors, (string Series, double Pos)[]? Series = null, int Ratings = 1, string? Image = "https://img/x.jpg");
     public sealed record S(int Id, string Name, string Slug, string? Author, int Primary, (int BookId, string Title)[]? Books = null);
 
+    public sealed record A(int Id, string Name, string[]? Alternate = null, int? AliasOf = null);
+    public List<A> AuthorList { get; } = [];
+    /// <summary>When set, the alias query is refused the way a GraphQL validation error is (the field is not exposed).</summary>
+    public bool RefuseAliasQuery { get; set; }
     public List<B> Books { get; } = [];
     public List<S> SeriesList { get; } = [];
     public List<string> Operations { get; } = [];
@@ -42,6 +46,9 @@ internal sealed class FakeHardcover : HttpMessageHandler
             "GetBook" => new { books = Books.Where(b => b.Id == IntVar("id")).Select(Json) },
             "GetBooksByTitleRange" => new { books = Books.Where(b => InRange(b.Title, Var("low"), Var("high"))).OrderByDescending(b => b.Ratings).Take(IntVar("n")).Select(Json) },
             "GetBooksByTitleRangeAndAuthor" => new { books = Books.Where(b => InRange(b.Title, Var("low"), Var("high")) && b.Authors.Contains(Var("author"))).OrderByDescending(b => b.Ratings).Take(IntVar("n")).Select(Json) },
+            "GetAuthor" => new { authors = AuthorList.Where(a => a.Id == IntVar("id")).Select(a => new { id = a.Id, name = a.Name, bio = (string?)null, slug = (string?)null, alternate_names = a.Alternate, image = (object?)null }) },
+            "GetAuthorAliases" when RefuseAliasQuery => throw new InvalidOperationException("Hardcover GraphQL error: field 'alias_id' not found in type: 'authors_bool_exp'"),
+            "GetAuthorAliases" => new { authors = AuthorList.Where(a => a.AliasOf == IntVar("id")).Select(a => new { id = a.Id, name = a.Name }) },
             "GetSeriesByNameExact" => new { series = SeriesList.Where(s => s.Name == Var("name")).OrderByDescending(s => s.Primary).Take(10).Select(SeriesJson) },
             "GetSeriesByNameRange" => new { series = SeriesList.Where(s => InRange(s.Name, Var("low"), Var("high"))).OrderByDescending(s => s.Primary).Take(IntVar("n")).Select(SeriesJson) },
             "GetSeriesBySlug" => new { series = SeriesList.Where(s => s.Slug == Var("slug")).Take(1).Select(s => new { id = s.Id }) },

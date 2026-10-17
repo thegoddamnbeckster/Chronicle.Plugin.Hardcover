@@ -891,10 +891,38 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
             Title          = author.Name,
             Overview       = author.Bio,
             PosterUrl      = author.Image?.Url,
-            AlternateNames = author.AlternateNames is { Length: > 0 }
-                             ? [..author.AlternateNames]
-                             : [],
+            AlternateNames = await AlternateNamesOfAsync(author, ct),
         };
+    }
+
+    // Set once Hardcover refuses the alias query (the field is not exposed to this token), so a refusal costs one request, not one per author.
+    private volatile bool _aliasQueryRefused;
+
+    /// <summary>
+    /// The author's own <c>alternate_names</c> plus the names of the author records Hardcover lists as its aliases (a pen name that
+    /// has a page of its own). Best effort: the alias lookup is an extra request and any failure of it leaves the author as it was.
+    /// </summary>
+    private async Task<List<string>> AlternateNamesOfAsync(HcAuthor author, CancellationToken ct)
+    {
+        var names = new List<string>(author.AlternateNames ?? []);
+        if (_aliasQueryRefused) return names;
+        try
+        {
+            var aliases = await _client!.GetAuthorAliasesAsync(author.Id, ct);
+            foreach (var a in aliases?.Authors ?? [])
+                if (!string.IsNullOrWhiteSpace(a.Name) && !names.Contains(a.Name, StringComparer.OrdinalIgnoreCase))
+                    names.Add(a.Name.Trim());
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (HttpRequestException) { /* quota or network: try again next time */ }
+        catch (InvalidOperationException ex) when (ex.Message.StartsWith("Hardcover GraphQL error", StringComparison.Ordinal))
+        {
+            // Hardcover understood the request and said no (the field is not exposed): not worth asking again.
+            _aliasQueryRefused = true;
+            _log.Warning(ex, "Hardcover would not list author aliases; continuing without them");
+        }
+        catch (InvalidOperationException) { /* a token or quota problem: the author fetch itself reports those */ }
+        return names;
     }
 
     private async Task<MediaMetadata> FetchSeriesAsync(int id, CancellationToken ct)

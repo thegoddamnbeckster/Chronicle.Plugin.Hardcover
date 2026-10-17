@@ -158,6 +158,19 @@ internal sealed class HardcoverClient : IDisposable
             """, new { id }, ct);
 
     /// <summary>
+    /// The author records that are aliases of this one: Hardcover lists a pen name as an author of its own (Jeremy Bishop) whose
+    /// <c>alias_id</c> points at the real author (Jeremy Robinson), and shows it as "Aliases" on the real author's page.
+    /// </summary>
+    public Task<AuthorData?> GetAuthorAliasesAsync(int id, CancellationToken ct = default) =>
+        QueryAsync<AuthorData>("""
+            query GetAuthorAliases($id: Int!) {
+              authors(where: { alias_id: { _eq: $id } }, limit: 25) {
+                id name
+              }
+            }
+            """, new { id }, ct);
+
+    /// <summary>
     /// Case-sensitive exact name lookup via <c>_eq</c>.
     /// Hardcover disabled <c>_ilike</c> and the <c>search(query_type:"Author")</c> endpoint
     /// returns 0 results for all queries, so this is the primary author discovery path.
