@@ -58,4 +58,57 @@ public class BuildSeriesMetadataTests
         Assert.Equal([1.0, 1.1, 2.0], results.Select(r => r.Position));
         Assert.All(results, r => Assert.Empty(r.Alternates));
     }
+
+    private static HcBookSeriesEntry WithCover(int id, string title, double? position, string? cover) => new()
+    {
+        Position = position,
+        Book = new HcBookStub { Id = id, Title = title, ReleaseYear = 2014, Image = cover is null ? null : new HcImage { Url = cover } },
+    };
+
+    private static string? PosterOf(params HcBookSeriesEntry[] entries) =>
+        HardcoverMetadataProvider.BuildSeriesMetadata(new HcSeries { Id = 1, Name = "Red Rising Saga", BookSeries = entries }).PosterUrl;
+
+    [Fact]
+    public void SeriesPoster_IsTheCoverOfTheOriginalLanguageFirstBook_NotAForeignEditionThatHappensToComeFirst()
+    {
+        // Live (2026-10-21): Red Rising Saga showed the Hungarian edition "Vörös Lázadás" as its poster.
+        var poster = PosterOf(
+            WithCover(5, "Vörös Lázadás", 1, "https://img/hungarian.jpg"),
+            WithCover(9, "Red Rising", 1, "https://img/english.jpg"),
+            WithCover(20, "Golden Son", 2, "https://img/golden.jpg"));
+
+        Assert.Equal("https://img/english.jpg", poster);
+    }
+
+    [Fact]
+    public void SeriesPoster_FallsToTheNextBookWithACover_WhenTheFirstHasNone()
+    {
+        var poster = PosterOf(WithCover(9, "Red Rising", 1, null), WithCover(20, "Golden Son", 2, "https://img/golden.jpg"));
+
+        Assert.Equal("https://img/golden.jpg", poster);
+    }
+
+    [Fact]
+    public void SeriesPoster_IsNullWhenNoBookHasACover()
+    {
+        Assert.Null(PosterOf(WithCover(9, "Red Rising", 1, null)));
+    }
+
+    [Fact]
+    public void SeriesSourceUrl_IsTheSlugPage_AndAbsentWithoutASlug()
+    {
+        var withSlug = HardcoverMetadataProvider.BuildSeriesMetadata(new HcSeries { Id = 1033, Name = "Red Rising Saga", Slug = "red-rising-saga", BookSeries = [] });
+        var without = HardcoverMetadataProvider.BuildSeriesMetadata(new HcSeries { Id = 1033, Name = "Red Rising Saga", BookSeries = [] });
+
+        Assert.Equal("https://hardcover.app/series/red-rising-saga", withSlug.SourceUrl);
+        Assert.Null(without.SourceUrl);
+    }
+
+    [Fact]
+    public void PageUrl_EscapesTheSlug_AndNeedsOne()
+    {
+        Assert.Equal("https://hardcover.app/books/biomancer-2", HardcoverMetadataProvider.PageUrl("books", "biomancer-2"));
+        Assert.Null(HardcoverMetadataProvider.PageUrl("books", " "));
+        Assert.Equal("https://hardcover.app/authors/a%2Fb", HardcoverMetadataProvider.PageUrl("authors", "a/b"));
+    }
 }

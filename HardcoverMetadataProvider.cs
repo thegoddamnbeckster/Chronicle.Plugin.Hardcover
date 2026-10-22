@@ -720,6 +720,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
         var meta = new MediaMetadata
         {
             ExternalId   = $"hardcover:{book.Id}",
+            SourceUrl    = PageUrl("books", book.Slug),
             Source       = "hardcover",
             Title        = book.Title,
             Year         = book.ReleaseYear,
@@ -887,6 +888,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
         return new MediaMetadata
         {
             ExternalId     = $"hardcover:author:{author.Id}",
+            SourceUrl      = PageUrl("authors", author.Slug),
             Source         = "hardcover",
             Title          = author.Name,
             Overview       = author.Bio,
@@ -951,6 +953,10 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
         return data?.Series?.FirstOrDefault();
     }
 
+    /// <summary>The hardcover.app page of a book, author or series. Hardcover addresses pages by slug only (a numeric id is "Page Not Found"), so no slug means no link.</summary>
+    internal static string? PageUrl(string kind, string? slug) =>
+        string.IsNullOrWhiteSpace(slug) ? null : $"https://hardcover.app/{kind}/{Uri.EscapeDataString(slug)}";
+
     /// <summary>The one canonical HcSeries -> MediaMetadata conversion — see BuildBookMetadata.</summary>
     internal static MediaMetadata BuildSeriesMetadata(HcSeries series)
     {
@@ -958,7 +964,6 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
             .Where(e => e.Book is not null && e.Book.Id > 0 && !string.IsNullOrWhiteSpace(e.Book.Title))
             .OrderBy(e => e.Position ?? double.MaxValue)
             .ToList();
-        var posterUrl = entries.FirstOrDefault()?.Book?.Image?.Url;
 
         // Root-caused live (2026-09-28): Hardcover's book_series list is one row per EDITION, not
         // one per logical book -- "Ready Player One" alone had 12 entries all at position 1 (the
@@ -987,9 +992,16 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
             .OrderBy(t => t.Rep.Position ?? double.MaxValue)
             .ToList();
 
+        // The series poster is the cover of its first book -- the REPRESENTATIVE of the lowest position (the ASCII-titled,
+        // original-language edition), not just the first row: the rows are one per edition, and the first one can be a foreign
+        // translation whose cover is not the series' face (Red Rising Saga showed its Hungarian edition, "Vörös Lázadás",
+        // while Hardcover's own series page shows the English cover; seen 2026-10-21). Later books only when earlier ones have no cover.
+        var posterUrl = books.Select(t => t.Rep.Book!.Image?.Url).FirstOrDefault(u => !string.IsNullOrWhiteSpace(u));
+
         return new MediaMetadata
         {
             ExternalId   = $"hardcover:series:{series.Id}",
+            SourceUrl    = PageUrl("series", series.Slug),
             Source       = "hardcover",
             Title        = series.Name,
             Overview     = series.Description,
@@ -1073,6 +1085,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
         return new MediaMetadata
         {
             ExternalId     = $"hardcover:{book.Id}",
+            SourceUrl      = PageUrl("books", book.Slug),
             Source         = "hardcover",
             Title          = book.Title,
             Overview       = book.Description,
@@ -1143,6 +1156,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
         var meta = new MediaMetadata
         {
             ExternalId     = $"hardcover:author:{author.Id}",
+            SourceUrl      = PageUrl("authors", author.Slug),
             Source         = "hardcover",
             Title          = author.Name,
             Overview       = author.Bio,
