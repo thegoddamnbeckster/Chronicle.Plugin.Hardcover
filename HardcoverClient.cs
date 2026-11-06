@@ -25,7 +25,7 @@ internal sealed class HardcoverClient : IDisposable
     private static readonly ILogger _log = Log.ForContext<HardcoverClient>();
 
     private readonly HttpClient _http;
-    private readonly string     _tokenPreview;   // masked — first 12 JWT chars for diagnostics
+    private readonly string     _tokenPreview;   // a description of the token (set or not, its length), never any of its characters
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -44,9 +44,8 @@ internal sealed class HardcoverClient : IDisposable
             ? apiToken["Bearer ".Length..].Trim()
             : apiToken.Trim();
 
-        _tokenPreview = jwt.Length >= 12
-            ? jwt[..12] + "…"
-            : string.IsNullOrWhiteSpace(jwt) ? "(empty)" : "(short:" + jwt.Length + "chars)";
+        // Never any part of the token: only whether one is set and how long it is, enough to tell "empty" from "pasted".
+        _tokenPreview = string.IsNullOrWhiteSpace(jwt) ? "(no token set)" : $"(token set, {jwt.Length} characters)";
 
         _http = handler is null ? new HttpClient() : new HttpClient(handler);
         _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {jwt}");
@@ -54,7 +53,7 @@ internal sealed class HardcoverClient : IDisposable
             "User-Agent", "Chronicle/1.0 (https://github.com/thegoddamnbeckster/Chronicle)");
         _http.Timeout = TimeSpan.FromSeconds(30);
 
-        _log.Information("HardcoverClient created — token prefix: {Prefix}", _tokenPreview);
+        _log.Information("HardcoverClient created — {Token}", _tokenPreview);
     }
 
     public Task<MeData?> GetMeAsync(CancellationToken ct = default) =>
