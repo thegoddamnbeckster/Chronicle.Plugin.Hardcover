@@ -22,7 +22,7 @@ public sealed class HardcoverImportProvider : IImportProvider
 {
     // ── IImportProvider identity ──────────────────────────────────────────────
 
-    public string PluginId    => "hardcover";
+    public string PluginId    => "chronicle.plugin.hardcover";
     public string Name        => "Hardcover";
     public string Version     => System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(HardcoverImportProvider).Assembly)?.InformationalVersion.Split('+')[0] ?? "1.6.0";
     public string Author      => "Michael Beck";

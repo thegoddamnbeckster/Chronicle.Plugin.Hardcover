@@ -8,7 +8,7 @@ namespace Chronicle.Plugin.Hardcover;
 
 public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPolicyProvider
 {
-    public string PluginId => "hardcover";
+    public string PluginId => "chronicle.plugin.hardcover";
 
     /// <summary>A series id is "hardcover:series:{id}". Chronicle keeps the book list of every series matched to one in step with
     /// Hardcover's after this plugin's metadata fetch.</summary>
