@@ -14,7 +14,7 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
     /// Hardcover's after this plugin's metadata fetch.</summary>
     public ExternalIdPolicy GetExternalIdPolicy() => new() { Source = "hardcover", SeriesIdMarker = "series:" };
     public string Name     => "Hardcover";
-    public string Version  => "1.4.0";
+    public string Version  => System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(HardcoverMetadataProvider).Assembly)?.InformationalVersion.Split('+')[0] ?? "1.6.0";
     public string Author   => "Michael Beck";
 
     private static readonly ILogger _log = Log.ForContext<HardcoverMetadataProvider>();
@@ -1103,11 +1103,8 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
 
     // ── GetImageAsync / HealthCheckAsync ──────────────────────────────────────
 
-    public async Task<byte[]> GetImageAsync(string url, CancellationToken ct = default)
-    {
-        EnsureConfigured();
-        return await _client!.GetBytesAsync(url, ct);
-    }
+    public Task<byte[]> GetImageAsync(string url, CancellationToken ct = default)
+        => throw new NotSupportedException("Images are loaded by the browser straight from the address in the metadata; this plugin has nothing to fetch.");
 
     public async Task<bool> HealthCheckAsync(CancellationToken ct = default)
     {

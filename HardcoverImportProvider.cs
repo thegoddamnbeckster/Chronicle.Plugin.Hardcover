@@ -24,7 +24,7 @@ public sealed class HardcoverImportProvider : IImportProvider
 
     public string PluginId    => "hardcover";
     public string Name        => "Hardcover";
-    public string Version     => "1.0.0";
+    public string Version     => System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(HardcoverImportProvider).Assembly)?.InformationalVersion.Split('+')[0] ?? "1.6.0";
     public string Author      => "Michael Beck";
     public string Description =>
         "Import reading history, ratings and want-to-read list from Hardcover.app via GraphQL";
