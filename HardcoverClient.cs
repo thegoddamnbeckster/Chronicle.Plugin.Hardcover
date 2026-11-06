@@ -481,7 +481,7 @@ internal sealed class HardcoverClient : IDisposable
                     $"HTTP {(int)resp.StatusCode} persisted across 3 attempts (token invalid/expired or missing scope)");
                 throw new InvalidOperationException(
                     $"Hardcover API returned {(int)resp.StatusCode} after 3 attempts — " +
-                    $"token prefix: {_tokenPreview} — response: {(string.IsNullOrWhiteSpace(responseBody) ? "(empty)" : responseBody)}. " +
+                    $"token: {_tokenPreview} — response: {(string.IsNullOrWhiteSpace(responseBody) ? "(empty)" : responseBody)}. " +
                     "Your API token may be invalid or expired (tokens reset January 1st each year). " +
                     "Go to hardcover.app/account/api, copy the current token, " +
                     "and re-enter it in Settings → Plugins → Hardcover.");
