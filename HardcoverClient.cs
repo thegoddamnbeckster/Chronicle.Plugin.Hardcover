@@ -431,8 +431,8 @@ internal sealed class HardcoverClient : IDisposable
                 // A long Retry-After is the daily cap (resets 00:00 UTC), not the per-minute bucket:
                 // waiting it out inline just pins the caller until its own timeout, and every other
                 // queued caller would do the same. Open the breaker and fail fast -- the host treats
-                // a 429 HttpRequestException as "provider unavailable, stop this pass, leave items
-                // Pending" (MetadataEnrichmentService), so nothing is marked failed or exhausted.
+                // a 429 HttpRequestException as "the provider is rate limited" and does not count it against the item;
+                // the RetryAfter on it tells the queue how long to hold the item (it goes to the back of the queue).
                 // The same applies if the RateLimit header on this very response already opened it.
                 if (retryAfter > HardcoverRateLimiter.MaxInlineWait || Limiter.IsBlocked)
                 {
@@ -441,7 +441,7 @@ internal sealed class HardcoverClient : IDisposable
                             $"Hardcover answered 429 with Retry-After {retryAfter.TotalSeconds:F0}s (daily quota)");
                     throw new HttpRequestException(
                         $"Hardcover API quota exhausted; retry after {retryAfter.TotalSeconds:F0}s.",
-                        null, HttpStatusCode.TooManyRequests);
+                        null, HttpStatusCode.TooManyRequests) { Data = { ["RetryAfter"] = retryAfter } };
                 }
 
                 // Out of attempts: give up now rather than sleeping first and throwing after.
@@ -503,7 +503,8 @@ internal sealed class HardcoverClient : IDisposable
         // stampeding the same bucket, and report it as a 429 so the host pauses instead of failing items.
         Limiter.OpenBreaker(TimeSpan.FromMinutes(1), "still rate-limited after 3 attempts");
         throw new HttpRequestException(
-            "Hardcover API rate limit exceeded after retries.", null, HttpStatusCode.TooManyRequests);
+            "Hardcover API rate limit exceeded after retries.", null, HttpStatusCode.TooManyRequests)
+            { Data = { ["RetryAfter"] = TimeSpan.FromMinutes(1) } };
     }
 
     public void Dispose() => _http.Dispose();

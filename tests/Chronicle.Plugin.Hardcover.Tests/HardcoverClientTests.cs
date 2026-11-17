@@ -56,6 +56,7 @@ public class HardcoverClientTests
 
         var ex = await Assert.ThrowsAsync<HttpRequestException>(() => Query(client));
         Assert.Equal(HttpStatusCode.TooManyRequests, ex.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(35000), ex.Data["RetryAfter"]);   // the daily cap, so Chronicle's queue holds the item and carries on
         Assert.Equal(1, handler.Calls);
         Assert.True(clock.Limiter.IsBlocked);
         Assert.True(clock.Waited < TimeSpan.FromSeconds(5)); // did not wait the ~9.7 hours
