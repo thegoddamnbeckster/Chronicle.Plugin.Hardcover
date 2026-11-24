@@ -1,11 +1,11 @@
 {
   "plugin_id": "chronicle.plugin.hardcover",
   "name": "Hardcover",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "author": "Michael Beck",
   "description": "Book and audiobook metadata from Hardcover.app, plus reading history import.",
   "entry_type": "Chronicle.Plugin.Hardcover.HardcoverImportProvider",
-  "min_chronicle_version": "0.1.0",
+  "min_chronicle_version": "0.20.82",
   "repository": "https://github.com/thegoddamnbeckster/Chronicle.Plugin.Hardcover",
   "iconUrl": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHJlY3QgeD0nMycgeT0nMycgd2lkdGg9JzE4JyBoZWlnaHQ9JzE4JyByeD0nMicgZmlsbD0nIzdjM2FlZCcvPjxwYXRoIGZpbGw9J3doaXRlJyBkPSdNNyA3aDEwdjJIN3ptMCA0aDEwdjJIN3ptMCA0aDd2Mkg3eicvPjwvc3ZnPg==",
   "brandColorLight": "#8b5cf6",
