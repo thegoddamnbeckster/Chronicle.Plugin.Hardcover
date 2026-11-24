@@ -783,6 +783,74 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
         return new ScoredCandidate(meta, Math.Max(0, score), string.Join(", ", reasonList));
     }
 
+    // ── GetChildrenAsync ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// An author's series (each carrying its own id, so its books can be asked for in turn) and the books that belong to no
+    /// series; or a series' books in reading order. Chronicle files a book without a series directly under its author.
+    /// </summary>
+    public async Task<IReadOnlyList<ProviderChild>> GetChildrenAsync(
+        string externalId, int hierarchyLevel, CancellationToken ct = default)
+    {
+        EnsureConfigured();
+        if (externalId.StartsWith("hardcover:series:", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!int.TryParse(externalId["hardcover:series:".Length..], out var seriesId)) return [];
+            var series = await FetchSeriesAsync(seriesId, ct);
+            return (series.Results ?? [])
+                .Where(b => !string.IsNullOrWhiteSpace(b.Title))
+                .Select((b, i) =>
+                {
+                    double? position = null;
+                    if (b.ExtendedData is { ValueKind: JsonValueKind.Object } ext
+                        && ext.TryGetProperty("seriesPosition", out var pos) && pos.ValueKind == JsonValueKind.Number)
+                        position = pos.GetDouble();
+                    return new ProviderChild(b.Title, Number: (int)Math.Floor(position ?? i + 1), ExternalId: b.ExternalId,
+                        Year: b.Year, PosterUrl: b.PosterUrl, SeriesPosition: position);
+                }).ToList();
+        }
+
+        if (!externalId.StartsWith("hardcover:author:", StringComparison.OrdinalIgnoreCase)) return [];
+        if (!int.TryParse(externalId["hardcover:author:".Length..], out var authorId)) return [];
+
+        const int pageSize = 100, maxPages = 50;
+        var contributions = new List<HcAuthorContribution>();
+        for (var page = 0; page < maxPages; page++)
+        {
+            var data = await _client!.GetAuthorBooksAsync(authorId, pageSize, page * pageSize, ct);
+            var batch = data?.Authors?.FirstOrDefault()?.Contributions ?? [];
+            contributions.AddRange(batch);
+            if (batch.Length < pageSize) break;
+        }
+
+        // Only the author's own credit: a narrator or illustrator contribution is not a book of theirs. A credit with no
+        // role is the author's.
+        var books = contributions
+            .Where(c => c.Book is { Id: > 0 } b && !string.IsNullOrWhiteSpace(b.Title)
+                        && (string.IsNullOrWhiteSpace(c.Contribution)
+                            || string.Equals(c.Contribution, "Author", StringComparison.OrdinalIgnoreCase)))
+            .Select(c => c.Book!)
+            .GroupBy(b => b.Id).Select(g => g.First())
+            .ToList();
+
+        var result = new List<ProviderChild>();
+        var seenSeries = new HashSet<int>();
+        foreach (var book in books.OrderBy(b => b.ReleaseYear ?? int.MaxValue).ThenBy(b => b.Id))
+        {
+            var inSeries = (book.BookSeries ?? []).FirstOrDefault(s => s.Series is { Id: > 0 } && !string.IsNullOrWhiteSpace(s.Series.Name));
+            if (inSeries?.Series is { } s)
+            {
+                if (seenSeries.Add(s.Id))
+                    result.Add(new ProviderChild(s.Name, ExternalId: $"hardcover:series:{s.Id}"));
+            }
+            else
+            {
+                result.Add(new ProviderChild(book.Title, ExternalId: $"hardcover:{book.Id}", Year: book.ReleaseYear));
+            }
+        }
+        return result;
+    }
+
     // ── GetByIdAsync ──────────────────────────────────────────────────────────
 
     public async Task<MediaMetadata> GetByIdAsync(string externalId, CancellationToken ct = default)
@@ -1098,7 +1166,23 @@ public sealed class HardcoverMetadataProvider : IMetadataProvider, IExternalIdPo
                              ? (int)Math.Round(book.DefaultEdition.AudioSeconds.Value / 60.0)
                              : null,
             ExtendedData   = JsonSerializer.SerializeToElement(extData),
+            Lineage        = BuildLineage(book.Contributions, seriesEntry?.Series),
         };
+    }
+
+    /// <summary>Where a book sits: its author and, when it belongs to one, its series. A book with no named author has no lineage
+    /// (a series cannot be filed without the author above it).</summary>
+    private static List<ProviderAncestor> BuildLineage(HcContribution[]? contributions, HcSeriesStub? series)
+    {
+        var author = (contributions ?? []).FirstOrDefault(c =>
+            c.Author is { Id: > 0 } && !string.IsNullOrWhiteSpace(c.Author.Name)
+            && (string.IsNullOrWhiteSpace(c.Contribution) || string.Equals(c.Contribution, "Author", StringComparison.OrdinalIgnoreCase)))?.Author;
+        if (author is null) return [];
+
+        var lineage = new List<ProviderAncestor> { new(author.Name, $"hardcover:author:{author.Id}") };
+        if (series is { Id: > 0 } && !string.IsNullOrWhiteSpace(series.Name))
+            lineage.Add(new ProviderAncestor(series.Name, $"hardcover:series:{series.Id}"));
+        return lineage;
     }
 
     // ── GetImageAsync / HealthCheckAsync ──────────────────────────────────────

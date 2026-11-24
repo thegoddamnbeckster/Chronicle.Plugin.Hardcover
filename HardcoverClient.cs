@@ -157,6 +157,23 @@ internal sealed class HardcoverClient : IDisposable
             """, new { id }, ct);
 
     /// <summary>
+    /// One page of the books an author contributed to, each with the series it belongs to. Hardcover lists a contribution
+    /// for every kind of credit (author, narrator, illustrator ...); the caller keeps the author's own.
+    /// </summary>
+    public Task<AuthorData?> GetAuthorBooksAsync(int id, int limit, int offset, CancellationToken ct = default) =>
+        QueryAsync<AuthorData>("""
+            query GetAuthorBooks($id: Int!, $n: Int!, $o: Int!) {
+              authors(where: { id: { _eq: $id } }) {
+                id name
+                contributions(limit: $n, offset: $o) {
+                  contribution
+                  book { id title release_year book_series { position series { id name } } }
+                }
+              }
+            }
+            """, new { id, n = limit, o = offset }, ct);
+
+    /// <summary>
     /// The author records that are aliases of this one: Hardcover lists a pen name as an author of its own (Jeremy Bishop) whose
     /// <c>alias_id</c> points at the real author (Jeremy Robinson), and shows it as "Aliases" on the real author's page.
     /// </summary>

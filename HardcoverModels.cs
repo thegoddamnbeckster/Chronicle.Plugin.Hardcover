@@ -118,6 +118,14 @@ internal class HcAuthor
     [JsonPropertyName("image")]           public HcImage? Image          { get; set; }
     /// <summary>Pen names and name variants (e.g. ["K. J. Parker"] for Tom Holt).</summary>
     [JsonPropertyName("alternate_names")] public string[]? AlternateNames { get; set; }
+    /// <summary>The author's contributions, each to one book (only asked for by the author-books query).</summary>
+    [JsonPropertyName("contributions")]   public HcAuthorContribution[]? Contributions { get; set; }
+}
+
+internal class HcAuthorContribution
+{
+    [JsonPropertyName("contribution")] public string?  Contribution { get; set; }
+    [JsonPropertyName("book")]         public HcBook?  Book         { get; set; }
 }
 
 // ── Series ────────────────────────────────────────────────────────────────────

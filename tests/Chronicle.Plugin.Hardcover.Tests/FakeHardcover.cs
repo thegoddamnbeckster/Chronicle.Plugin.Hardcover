@@ -47,6 +47,9 @@ internal sealed class FakeHardcover : HttpMessageHandler
             "GetBooksByTitleRange" => new { books = Books.Where(b => InRange(b.Title, Var("low"), Var("high"))).OrderByDescending(b => b.Ratings).Take(IntVar("n")).Select(Json) },
             "GetBooksByTitleRangeAndAuthor" => new { books = Books.Where(b => InRange(b.Title, Var("low"), Var("high")) && b.Authors.Contains(Var("author"))).OrderByDescending(b => b.Ratings).Take(IntVar("n")).Select(Json) },
             "GetAuthor" => new { authors = AuthorList.Where(a => a.Id == IntVar("id")).Select(a => new { id = a.Id, name = a.Name, bio = (string?)null, slug = (string?)null, alternate_names = a.Alternate, image = (object?)null }) },
+            "GetAuthorBooks" => new { authors = AuthorList.Where(a => a.Id == IntVar("id")).Select(a => new { id = a.Id, name = a.Name,
+                contributions = Books.Where(b => b.Authors.Contains(a.Name)).Skip(IntVar("o")).Take(IntVar("n"))
+                    .Select(b => new { contribution = (string?)null, book = Json(b) }) }) },
             "GetAuthorAliases" when RefuseAliasQuery => throw new InvalidOperationException("Hardcover GraphQL error: field 'alias_id' not found in type: 'authors_bool_exp'"),
             "GetAuthorAliases" => new { authors = AuthorList.Where(a => a.AliasOf == IntVar("id")).Select(a => new { id = a.Id, name = a.Name }) },
             "GetSeriesByNameExact" => new { series = SeriesList.Where(s => s.Name == Var("name")).OrderByDescending(s => s.Primary).Take(10).Select(SeriesJson) },
