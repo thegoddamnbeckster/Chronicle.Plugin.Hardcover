@@ -1,7 +1,7 @@
 {
   "plugin_id": "chronicle.plugin.hardcover",
   "name": "Hardcover",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "author": "Michael Beck",
   "description": "Book and audiobook metadata from Hardcover.app, plus reading history import.",
   "entry_type": "Chronicle.Plugin.Hardcover.HardcoverImportProvider",
@@ -39,6 +39,15 @@
       "description": "Imports reading activity added since the last sync.",
       "default_cron": "0 2 * * *",
       "default_enabled": true
+    }
+  ],
+  "rating_sources": [
+    {
+      "key": "hardcover",
+      "display_name": "Hardcover",
+      "stored_scale": 5,
+      "scale": 5,
+      "star": "single"
     }
   ]
 }
